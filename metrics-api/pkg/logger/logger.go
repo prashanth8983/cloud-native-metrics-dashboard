@@ -1,274 +1,249 @@
-// pkg/logger/logger.go
 package logger
 
 import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 	"time"
 
-	"github.com/rs/zerolog"
-	"gopkg.in/natefinch/lumberjack.v2"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
-// Log levels
-const (
-	DebugLevel = "debug"
-	InfoLevel  = "info"
-	WarnLevel  = "warn"
-	ErrorLevel = "error"
-)
-
-// Formats
-const (
-	JSONFormat = "json"
-	TextFormat = "text"
-)
-
-// Config holds the logger configuration
-type Config struct {
-	Level       string
-	Format      string
-	FilePath    string
-	MaxSize     int // megabytes
-	MaxBackups  int // number of files
-	MaxAge      int // days
-	Compression bool
+// Logger defines the logging interface
+type Logger interface {
+	Debug(args ...interface{})
+	Debugf(format string, args ...interface{})
+	Info(args ...interface{})
+	Infof(format string, args ...interface{})
+	Warn(args ...interface{})
+	Warnf(format string, args ...interface{})
+	Error(args ...interface{})
+	Errorf(format string, args ...interface{})
+	Fatal(args ...interface{})
+	Fatalf(format string, args ...interface{})
+	WithFields(fields map[string]interface{}) Logger
+	With(fields map[string]interface{}) Logger
+	Sync() error
 }
 
-// Logger is a wrapper around zerolog.Logger
-type Logger struct {
-	*zerolog.Logger
-	config Config
-	mu     sync.Mutex
+// zapLogger implements the Logger interface with zap
+type zapLogger struct {
+	logger *zap.SugaredLogger
 }
 
-var (
-	defaultLogger *Logger
-	once          sync.Once
-)
-
-// New creates a new logger with the specified configuration
-func New(config Config) *Logger {
-	// Set up zerolog global settings
-	zerolog.TimeFieldFormat = time.RFC3339Nano
-	zerolog.TimestampFieldName = "timestamp"
-	zerolog.LevelFieldName = "level"
-	zerolog.MessageFieldName = "message"
-	zerolog.CallerFieldName = "caller"
-
-	// Create the logger instance
-	logger := &Logger{
-		config: config,
+// NewLogger creates a new Logger with the specified options
+func NewLogger(opts ...Option) Logger {
+	// Default configuration
+	config := &loggerConfig{
+		level:      zapcore.InfoLevel,
+		outputType: "json",
+		output:     os.Stdout,
 	}
 
-	// Initialize the logger
-	logger.configure()
-
-	return logger
-}
-
-// configure sets up the logger based on the current configuration
-func (l *Logger) configure() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	var writers []io.Writer
-
-	// Set up console writer
-	var consoleWriter io.Writer = os.Stdout // Default to os.Stdout
-	if l.config.Format == TextFormat {
-		cw := zerolog.ConsoleWriter{ // Create ConsoleWriter instance
-			Out:        os.Stdout,
-			TimeFormat: time.RFC3339,
-		}
-		consoleWriter = cw // Assign it as an io.Writer
-	}
-	writers = append(writers, consoleWriter)
-
-	// Set up file writer if specified
-	if l.config.FilePath != "" {
-		fileWriter := &lumberjack.Logger{
-			Filename:   l.config.FilePath,
-			MaxSize:    l.config.MaxSize,
-			MaxBackups: l.config.MaxBackups,
-			MaxAge:     l.config.MaxAge,
-			Compress:   l.config.Compression,
-		}
-		writers = append(writers, fileWriter)
+	// Apply options
+	for _, opt := range opts {
+		opt(config)
 	}
 
-	// Create multi-writer for output to multiple destinations
-	mw := io.MultiWriter(writers...)
-
-	// Create the logger
-	var level zerolog.Level
-	switch l.config.Level {
-	case DebugLevel:
-		level = zerolog.DebugLevel
-	case InfoLevel:
-		level = zerolog.InfoLevel
-	case WarnLevel:
-		level = zerolog.WarnLevel
-	case ErrorLevel:
-		level = zerolog.ErrorLevel
-	default:
-		level = zerolog.InfoLevel
+	// Create encoder config
+	encoderConfig := zapcore.EncoderConfig{
+		TimeKey:        "timestamp",
+		LevelKey:       "level",
+		NameKey:        "logger",
+		CallerKey:      "caller",
+		MessageKey:     "message",
+		StacktraceKey:  "stacktrace",
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeLevel:    zapcore.LowercaseLevelEncoder,
+		EncodeTime:     zapcore.TimeEncoder(func(t time.Time, enc zapcore.PrimitiveArrayEncoder) { enc.AppendString(t.UTC().Format(time.RFC3339Nano)) }),
+		EncodeDuration: zapcore.SecondsDurationEncoder,
+		EncodeCaller:   zapcore.ShortCallerEncoder,
 	}
 
-	zl := zerolog.New(mw).
-		Level(level).
-		With().
-		Timestamp().
-		Caller().
-		Logger()
+	// Create encoder based on output type
+	var encoder zapcore.Encoder
+	if config.outputType == "json" {
+		encoder = zapcore.NewJSONEncoder(encoderConfig)
+	} else {
+		encoder = zapcore.NewConsoleEncoder(encoderConfig)
+	}
 
-	l.Logger = &zl
-}
+	// Create core
+	core := zapcore.NewCore(
+		encoder,
+		zapcore.AddSync(config.output),
+		config.level,
+	)
 
-// UpdateConfig updates the logger configuration
-func (l *Logger) UpdateConfig(config Config) {
-	l.config = config
-	l.configure()
-}
+	// Create zap logger
+	logger := zap.New(
+		core,
+		zap.AddCaller(),
+		zap.AddCallerSkip(1),
+		zap.AddStacktrace(zapcore.ErrorLevel),
+	)
 
-// Default gets the default logger, creating it if necessary
-func Default() *Logger {
-	once.Do(func() {
-		defaultLogger = New(Config{
-			Level:  InfoLevel,
-			Format: TextFormat,
-		})
-	})
-	return defaultLogger
-}
-
-// SetDefault sets the default logger
-func SetDefault(logger *Logger) {
-	defaultLogger = logger
-}
-
-// WithField adds a field to the logger
-func (l *Logger) WithField(key string, value interface{}) *Logger {
-	// Create a new logger with the added field
-	newLogger := l.Logger.With().Interface(key, value).Logger()
-
-	// Return a new Logger with the updated zerolog.Logger
-	return &Logger{
-		Logger: &newLogger,
-		config: l.config,
-		mu:     sync.Mutex{},
+	return &zapLogger{ // Fixed: Use type name directly
+		logger: logger.Sugar(),
 	}
 }
 
-// WithFields adds multiple fields to the logger
-func (l *Logger) WithFields(fields map[string]interface{}) *Logger {
-	// Create a context for building the new logger
-	ctx := l.Logger.With()
-
-	// Add all fields
+func (l *zapLogger) WithFields(fields map[string]interface{}) Logger {
+	zapFields := make([]zap.Field, 0, len(fields))
 	for k, v := range fields {
-		ctx = ctx.Interface(k, v)
+		zapFields = append(zapFields, zap.Any(k, v))
 	}
 
-	// Create the new logger
-	newLogger := ctx.Logger()
+	newLogger := l.logger.Desugar().With(zapFields...)
+	return &zapLogger{
+		logger: newLogger.Sugar(),
+	}
+}
 
-	// Return a new Logger with the updated zerolog.Logger
-	return &Logger{
-		Logger: &newLogger,
-		config: l.config,
-		mu:     sync.Mutex{},
+
+// NewNopLogger creates a logger that discards all logs
+func NewNopLogger() Logger {
+	return &zapLogger{ 
+		logger: zap.NewNop().Sugar(),
 	}
 }
 
 // Debug logs a debug message
-func Debug(msg string, args ...interface{}) {
-	if len(args) > 0 {
-		Default().Debug().Msg(fmt.Sprintf(msg, args...))
-	} else {
-		Default().Debug().Msg(msg)
+func (l *zapLogger) Debug(args ...interface{}) {
+	if l.logger != nil {
+		l.logger.Debug(args...)
+	}
+}
+
+// Debugf logs a formatted debug message
+func (l *zapLogger) Debugf(format string, args ...interface{}) {
+	if l.logger != nil {
+		l.logger.Debugf(format, args...)
 	}
 }
 
 // Info logs an info message
-func Info(msg string, args ...interface{}) {
-	if len(args) > 0 {
-		Default().Info().Msg(fmt.Sprintf(msg, args...))
-	} else {
-		Default().Info().Msg(msg)
+func (l *zapLogger) Info(args ...interface{}) {
+	if l.logger != nil {
+		l.logger.Info(args...)
+	}
+}
+
+// Infof logs a formatted info message
+func (l *zapLogger) Infof(format string, args ...interface{}) {
+	if l.logger != nil {
+		l.logger.Infof(format, args...)
 	}
 }
 
 // Warn logs a warning message
-func Warn(msg string, args ...interface{}) {
-	if len(args) > 0 {
-		Default().Warn().Msg(fmt.Sprintf(msg, args...))
-	} else {
-		Default().Warn().Msg(msg)
+func (l *zapLogger) Warn(args ...interface{}) {
+	if l.logger != nil {
+		l.logger.Warn(args...)
+	}
+}
+
+// Warnf logs a formatted warning message
+func (l *zapLogger) Warnf(format string, args ...interface{}) {
+	if l.logger != nil {
+		l.logger.Warnf(format, args...)
 	}
 }
 
 // Error logs an error message
-func Error(msg string, args ...interface{}) {
-	if len(args) > 0 {
-		Default().Error().Msg(fmt.Sprintf(msg, args...))
-	} else {
-		Default().Error().Msg(msg)
+func (l *zapLogger) Error(args ...interface{}) {
+	if l.logger != nil {
+		l.logger.Error(args...)
 	}
 }
 
-// DebugWithFields logs a debug message with fields
-func DebugWithFields(msg string, fields map[string]interface{}) {
-	ctx := Default().Debug()
+// Errorf logs a formatted error message
+func (l *zapLogger) Errorf(format string, args ...interface{}) {
+	if l.logger != nil {
+		l.logger.Errorf(format, args...)
+	}
+}
+
+// Fatal logs a fatal message and exits
+func (l *zapLogger) Fatal(args ...interface{}) {
+	if l.logger != nil {
+		l.logger.Fatal(args...)
+	}
+}
+
+// Fatalf logs a formatted fatal message and exits
+func (l *zapLogger) Fatalf(format string, args ...interface{}) {
+	if l.logger != nil {
+		l.logger.Fatalf(format, args...)
+	}
+}
+
+// With returns a logger with the specified fields
+func (l *zapLogger) With(fields map[string]interface{}) Logger {
+	if l.logger == nil {
+		return l
+	}
+	args := make([]interface{}, 0, len(fields)*2)
 	for k, v := range fields {
-		ctx = ctx.Interface(k, v)
+		args = append(args, k, v)
 	}
-	ctx.Msg(msg)
-}
-
-// InfoWithFields logs an info message with fields
-func InfoWithFields(msg string, fields map[string]interface{}) {
-	ctx := Default().Info()
-	for k, v := range fields {
-		ctx = ctx.Interface(k, v)
-	}
-	ctx.Msg(msg)
-}
-
-// WarnWithFields logs a warning message with fields
-func WarnWithFields(msg string, fields map[string]interface{}) {
-	ctx := Default().Warn()
-	for k, v := range fields {
-		ctx = ctx.Interface(k, v)
-	}
-	ctx.Msg(msg)
-}
-
-// ErrorWithFields logs an error message with fields
-func ErrorWithFields(msg string, fields map[string]interface{}) {
-	ctx := Default().Error()
-	for k, v := range fields {
-		ctx = ctx.Interface(k, v)
-	}
-	ctx.Msg(msg)
-}
-
-// WithError adds an error to the logger context
-func (l *Logger) WithError(err error) *Logger {
-	// Create a new logger with the added error
-	newLogger := l.Logger.With().Err(err).Logger()
-
-	// Return a new Logger with the updated zerolog.Logger
-	return &Logger{
-		Logger: &newLogger,
-		config: l.config,
-		mu:     sync.Mutex{},
+	return &zapLogger{
+		logger: l.logger.With(args...),
 	}
 }
 
-// ErrorWithError logs an error message with error details
-func ErrorWithError(msg string, err error) {
-	Default().WithError(err).Error().Msg(msg)
+// Sync flushes any buffered log entries
+func (l *zapLogger) Sync() error {
+	if l.logger == nil {
+		return nil
+	}
+	return l.logger.Sync()
+}
+
+// loggerConfig holds the configuration for the logger
+type loggerConfig struct {
+	level      zapcore.Level
+	outputType string
+	output     io.Writer
+}
+
+// Option is a function that configures a loggerConfig
+type Option func(*loggerConfig)
+
+// WithLevel sets the log level
+func WithLevel(level string) Option {
+	return func(c *loggerConfig) {
+		switch level {
+		case "debug":
+			c.level = zapcore.DebugLevel
+		case "info":
+			c.level = zapcore.InfoLevel
+		case "warn":
+			c.level = zapcore.WarnLevel
+		case "error":
+			c.level = zapcore.ErrorLevel
+		case "fatal":
+			c.level = zapcore.FatalLevel
+		default:
+			fmt.Fprintf(os.Stderr, "Invalid log level '%s', defaulting to info\n", level)
+			c.level = zapcore.InfoLevel
+		}
+	}
+}
+
+// WithOutputType sets the output format (json or console)
+func WithOutputType(outputType string) Option {
+	return func(c *loggerConfig) {
+		if outputType == "console" || outputType == "json" {
+			c.outputType = outputType
+		}
+	}
+}
+
+// WithOutput sets the output writer
+func WithOutput(output io.Writer) Option {
+	return func(c *loggerConfig) {
+		c.output = output
+	}
 }
