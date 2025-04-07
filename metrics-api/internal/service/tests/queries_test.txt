@@ -1,0 +1,241 @@
+package service
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"metrics-api/internal/models"
+	"metrics-api/internal/prometheus"
+	"metrics-api/pkg/logger"
+
+	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+)
+
+// TestExecuteInstantQuery tests the ExecuteInstantQuery method
+
+
+func TestExecuteInstantQuery(t *testing.T) {
+	mockClient := new(MockPrometheusClient)
+	mockLogger := logger.NewNopLogger()
+	
+	// Setup test data
+	query := "http_requests_total"
+	queryTime := time.Now()
+	
+	queryResults := []prometheus.QueryResult{
+		{
+			MetricName: "http_requests_total",
+			Labels: map[string]string{
+				"method": "GET",
+				"status": "200",
+			},
+			Value:     42.0,
+			Timestamp: queryTime,
+		},
+	}
+	
+	// Setup expectations
+	mockClient.On("Query", mock.Anything, query, queryTime).Return(queryResults, nil)
+	
+	// Create service with mock client
+	service := NewQueriesService(mockClient, mockLogger)
+	
+	// Call the method
+	queryParams := models.InstantQueryParams{
+		Query: query,
+		Time:  queryTime,
+	}
+	
+	response, err := service.ExecuteInstantQuery(context.Background(), queryParams)
+	
+	// Assert expectations
+	assert.NoError(t, err)
+	assert.Equal(t, query, response.Query)
+	assert.Equal(t, queryTime, response.QueryTime)
+	assert.Equal(t, "success", response.Status)
+	assert.Len(t, response.Data, 1)
+	assert.Equal(t, "http_requests_total", response.Data[0].MetricName)
+	assert.Equal(t, 42.0, response.Data[0].Value)
+	
+	mockClient.AssertExpectations(t)
+}
+
+// TestExecuteRangeQuery tests the ExecuteRangeQuery method
+func TestExecuteRangeQuery(t *testing.T) {
+	mockClient := new(MockPrometheusClient)
+	mockLogger := logger.NewNopLogger()
+	
+	// Setup test data
+	query := "rate(http_requests_total[5m])"
+	start := time.Now().Add(-1 * time.Hour)
+	end := time.Now()
+	step := 60
+	
+	timeValuePairs := []prometheus.TimeValuePair{
+		{
+			Timestamp: start,
+			Value:     10.0,
+		},
+		{
+			Timestamp: start.Add(time.Duration(step) * time.Second),
+			Value:     20.0,
+		},
+	}
+	
+	rangeResults := []prometheus.RangeQueryResult{
+		{
+			MetricName: "rate(http_requests_total[5m])",
+			Labels: map[string]string{
+				"method": "GET",
+				"status": "200",
+			},
+			Values: timeValuePairs,
+		},
+	}
+	
+	// Setup range
+	r := v1.Range{
+		Start: start,
+		End:   end,
+		Step:  time.Duration(step) * time.Second,
+	}
+	
+	// Setup expectations
+	mockClient.On("QueryRange", mock.Anything, query, r).Return(rangeResults, nil)
+	
+	// Create service with mock client
+	service := NewQueriesService(mockClient, mockLogger)
+	service.WithMaxPoints(1000)
+	
+	// Call the method
+	queryParams := models.RangeQueryParams{
+		Query: query,
+		Start: start,
+		End:   end,
+		Step:  step,
+	}
+	
+	response, err := service.ExecuteRangeQuery(context.Background(), queryParams)
+	
+	// Assert expectations
+	assert.NoError(t, err)
+	assert.Equal(t, query, response.Query)
+	assert.Equal(t, start, response.Start)
+	assert.Equal(t, end, response.End)
+	assert.Equal(t, time.Duration(step)*time.Second, response.Step)
+	assert.Equal(t, "success", response.Status)
+	assert.Len(t, response.Series, 1)
+	assert.Equal(t, "rate(http_requests_total[5m])", response.Series[0].MetricName)
+	assert.Len(t, response.Series[0].DataPoints, 2)
+	assert.Equal(t, 10.0, response.Series[0].DataPoints[0].Value)
+	assert.Equal(t, 20.0, response.Series[0].DataPoints[1].Value)
+	
+	mockClient.AssertExpectations(t)
+}
+
+// TestExecuteRangeQueryTooManyPoints tests that ExecuteRangeQuery fails when too many points would be returned
+func TestExecuteRangeQueryTooManyPoints(t *testing.T) {
+	mockClient := new(MockPrometheusClient)
+	mockLogger := logger.NewNopLogger()
+	
+	// Setup test data
+	query := "rate(http_requests_total[5m])"
+	start := time.Now().Add(-1 * time.Hour)
+	end := time.Now()
+	step := 1 // 1 second step will generate 3600 points for 1 hour
+	
+	// Create service with mock client and low max points
+	service := NewQueriesService(mockClient, mockLogger)
+	service.WithMaxPoints(100) // Set low max points
+	
+	// Call the method
+	queryParams := models.RangeQueryParams{
+		Query: query,
+		Start: start,
+		End:   end,
+		Step:  step,
+	}
+	
+	_, err := service.ExecuteRangeQuery(context.Background(), queryParams)
+	
+	// Assert expectations
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "too many points")
+}
+
+// TestValidateQuery tests the ValidateQuery method
+func TestValidateQuery(t *testing.T) {
+	mockClient := new(MockPrometheusClient)
+	mockLogger := logger.NewNopLogger()
+	
+	// Setup test data
+	validQuery := "http_requests_total"
+	invalidQuery := "invalid_query{"
+	
+	// Setup expectations
+	mockClient.On("Query", mock.Anything, validQuery, mock.Anything).Return([]prometheus.QueryResult{}, nil)
+	mockClient.On("Query", mock.Anything, invalidQuery, mock.Anything).Return([]prometheus.QueryResult{}, assert.AnError)
+	
+	// Create service with mock client
+	service := NewQueriesService(mockClient, mockLogger)
+	
+	// Test valid query
+	validResult, err := service.ValidateQuery(context.Background(), validQuery)
+	assert.NoError(t, err)
+	assert.True(t, validResult.Valid)
+	assert.Equal(t, validQuery, validResult.Query)
+	
+	// Test invalid query
+	invalidResult, err := service.ValidateQuery(context.Background(), invalidQuery)
+	assert.NoError(t, err)
+	assert.False(t, invalidResult.Valid)
+	assert.Equal(t, invalidQuery, invalidResult.Query)
+	
+	mockClient.AssertExpectations(t)
+}
+
+// TestGetQuerySuggestions tests the GetQuerySuggestions method
+func TestGetQuerySuggestions(t *testing.T) {
+	mockClient := new(MockPrometheusClient)
+	mockLogger := logger.NewNopLogger()
+	
+	// Setup test data
+	metrics := []string{
+		"http_requests_total",
+		"node_cpu_seconds_total",
+		"node_memory_MemFree_bytes",
+	}
+	
+	// Setup expectations
+	mockClient.On("GetMetrics", mock.Anything).Return(metrics, nil)
+	
+	// Create service with mock client
+	service := NewQueriesService(mockClient, mockLogger)
+	
+	// Test without prefix
+	suggestions, err := service.GetQuerySuggestions(context.Background(), "", 10)
+	assert.NoError(t, err)
+	assert.True(t, len(suggestions) > 0)
+	
+	// Test with prefix
+	suggestions, err = service.GetQuerySuggestions(context.Background(), "node", 10)
+	assert.NoError(t, err)
+	assert.True(t, len(suggestions) > 0)
+	
+	mockClient.AssertExpectations(t)
+}
+
+func (m *MockPrometheusClient) Query(ctx context.Context, query string, ts time.Time) ([]prometheus.QueryResult, error) {
+	args := m.Called(ctx, query, ts)
+	return args.Get(0).([]prometheus.QueryResult), args.Error(1)
+}
+
+// QueryRange mocks the QueryRange method
+func (m *MockPrometheusClient) QueryRange(ctx context.Context, query string, r prometheus.Range) ([]prometheus.RangeQueryResult, error) {
+	args := m.Called(ctx, query, r)
+	return args.Get(0).([]prometheus.RangeQueryResult), args.Error(1)
+}

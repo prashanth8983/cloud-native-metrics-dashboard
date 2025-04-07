@@ -1,0 +1,233 @@
+package service
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"metrics-api/internal/prometheus"
+	"metrics-api/pkg/logger"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+)
+
+// GetMetrics mocks the GetMetrics method
+func (m *MockPrometheusClient) GetMetrics(ctx context.Context) ([]string, error) {
+	args := m.Called(ctx)
+	return args.Get(0).([]string), args.Error(1)
+}
+
+// GetLabelsForMetric mocks the GetLabelsForMetric method
+func (m *MockPrometheusClient) GetLabelsForMetric(ctx context.Context, metricName string) ([]string, error) {
+	args := m.Called(ctx, metricName)
+	return args.Get(0).([]string), args.Error(1)
+}
+
+// TestGetMetrics tests the GetMetrics method
+func TestGetMetrics(t *testing.T) {
+	mockClient := new(MockPrometheusClient)
+	mockLogger := logger.NewNopLogger()
+	
+	// Create test metrics
+	expectedMetrics := []string{
+		"http_requests_total",
+		"node_cpu_seconds_total",
+		"node_memory_MemFree_bytes",
+	}
+	
+	// Setup expectations
+	mockClient.On("GetMetrics", mock.Anything).Return(expectedMetrics, nil)
+	
+	// Create service with mock client
+	service := NewMetricsService(mockClient, mockLogger)
+	
+	// Call the method
+	metrics, err := service.GetMetrics(context.Background())
+	
+	// Assert expectations
+	assert.NoError(t, err)
+	assert.Equal(t, expectedMetrics, metrics)
+	mockClient.AssertExpectations(t)
+}
+
+// TestGetMetricSummary tests the GetMetricSummary method
+func TestGetMetricSummary(t *testing.T) {
+	mockClient := new(MockPrometheusClient)
+	mockLogger := logger.NewNopLogger()
+	
+	// Setup test data
+	metricName := "http_requests_total"
+	labels := []string{"method", "status", "handler"}
+	
+	queryResults := []prometheus.QueryResult{
+		{
+			MetricName: metricName,
+			Labels: map[string]string{
+				"method": "GET",
+				"status": "200",
+			},
+			Value:     42.0,
+			Timestamp: time.Now(),
+		},
+	}
+	
+	cardinalityResults := []prometheus.QueryResult{
+		{
+			Value: 10.0,
+		},
+	}
+	
+	minResults := []prometheus.QueryResult{
+		{
+			Value: 5.0,
+		},
+	}
+	
+	maxResults := []prometheus.QueryResult{
+		{
+			Value: 100.0,
+		},
+	}
+	
+	avgResults := []prometheus.QueryResult{
+		{
+			Value: 50.0,
+		},
+	}
+	
+	// Setup expectations
+	mockClient.On("GetLabelsForMetric", mock.Anything, metricName).Return(labels, nil)
+	mockClient.On("Query", mock.Anything, metricName, mock.Anything).Return(queryResults, nil)
+	mockClient.On("Query", mock.Anything, "count(http_requests_total)", mock.Anything).Return(cardinalityResults, nil)
+	mockClient.On("Query", mock.Anything, "min_over_time(http_requests_total[1h])", mock.Anything).Return(minResults, nil)
+	mockClient.On("Query", mock.Anything, "max_over_time(http_requests_total[1h])", mock.Anything).Return(maxResults, nil)
+	mockClient.On("Query", mock.Anything, "avg_over_time(http_requests_total[1h])", mock.Anything).Return(avgResults, nil)
+	
+	// Create service with mock client
+	service := NewMetricsService(mockClient, mockLogger)
+	
+	// Call the method
+	summary, err := service.GetMetricSummary(context.Background(), metricName)
+	
+	// Assert expectations
+	assert.NoError(t, err)
+	assert.Equal(t, metricName, summary.Name)
+	assert.Equal(t, labels, summary.Labels)
+	assert.Equal(t, 10, summary.Cardinality)
+	assert.Equal(t, 5.0, summary.Stats.Min)
+	assert.Equal(t, 100.0, summary.Stats.Max)
+	assert.Equal(t, 50.0, summary.Stats.Avg)
+	assert.Len(t, summary.Samples, 1)
+	
+	mockClient.AssertExpectations(t)
+}
+
+// TestGetTopMetrics tests the GetTopMetrics method
+func TestGetTopMetrics(t *testing.T) {
+	mockClient := new(MockPrometheusClient)
+	mockLogger := logger.NewNopLogger()
+	
+	// Setup test data
+	metrics := []string{
+		"http_requests_total",
+		"node_cpu_seconds_total",
+	}
+	
+	cardinalityResults1 := []prometheus.QueryResult{
+		{
+			Value: 100.0,
+		},
+	}
+	
+	cardinalityResults2 := []prometheus.QueryResult{
+		{
+			Value: 50.0,
+		},
+	}
+	
+	rateResults1 := []prometheus.QueryResult{
+		{
+			Value: 5.0,
+		},
+	}
+	
+	rateResults2 := []prometheus.QueryResult{
+		{
+			Value: 2.0,
+		},
+	}
+	
+	// Setup expectations
+	mockClient.On("GetMetrics", mock.Anything).Return(metrics, nil)
+	mockClient.On("Query", mock.Anything, "count(http_requests_total)", mock.Anything).Return(cardinalityResults1, nil)
+	mockClient.On("Query", mock.Anything, "count(node_cpu_seconds_total)", mock.Anything).Return(cardinalityResults2, nil)
+	mockClient.On("Query", mock.Anything, "rate(http_requests_total[5m])", mock.Anything).Return(rateResults1, nil)
+	mockClient.On("Query", mock.Anything, "rate(node_cpu_seconds_total[5m])", mock.Anything).Return(rateResults2, nil)
+	
+	// Create service with mock client
+	service := NewMetricsService(mockClient, mockLogger)
+	
+	// Call the method
+	topMetrics, err := service.GetTopMetrics(context.Background(), 2)
+	
+	// Assert expectations
+	assert.NoError(t, err)
+	assert.Len(t, topMetrics, 2)
+	assert.Equal(t, "http_requests_total", topMetrics[0].Name)
+	assert.Equal(t, 100, topMetrics[0].Cardinality)
+	assert.Equal(t, 5.0, topMetrics[0].SampleRate)
+	assert.Equal(t, "node_cpu_seconds_total", topMetrics[1].Name)
+	assert.Equal(t, 50, topMetrics[1].Cardinality)
+	assert.Equal(t, 2.0, topMetrics[1].SampleRate)
+	
+	mockClient.AssertExpectations(t)
+}
+
+// TestGetMetricHealth tests the GetMetricHealth method
+func TestGetMetricHealth(t *testing.T) {
+	mockClient := new(MockPrometheusClient)
+	mockLogger := logger.NewNopLogger()
+	
+	// Setup test data
+	metricName := "http_requests_total"
+	
+	existenceResults := []prometheus.QueryResult{
+		{
+			Value: 1.0,
+		},
+	}
+	
+	scrapeResults := []prometheus.QueryResult{
+		{
+			Value:     1.0,
+			Timestamp: time.Now().Add(-1 * time.Minute),
+		},
+	}
+	
+	gapResults := []prometheus.QueryResult{
+		{
+			Value: 1.0,
+		},
+	}
+	
+	// Setup expectations
+	mockClient.On("Query", mock.Anything, "count(http_requests_total)", mock.Anything).Return(existenceResults, nil)
+	mockClient.On("Query", mock.Anything, "scrape_time_seconds{instance=~\".+\", job=~\".+\"} > 0", mock.Anything).Return(scrapeResults, nil)
+	mockClient.On("Query", mock.Anything, "count_over_time(http_requests_total[5m]) > 0", mock.Anything).Return(gapResults, nil)
+	
+	// Create service with mock client
+	service := NewMetricsService(mockClient, mockLogger)
+	
+	// Call the method
+	health, err := service.GetMetricHealth(context.Background(), metricName)
+	
+	// Assert expectations
+	assert.NoError(t, err)
+	assert.Equal(t, metricName, health.Name)
+	assert.True(t, health.Exists)
+	assert.False(t, health.IsStale)
+	assert.False(t, health.HasGaps)
+	
+	mockClient.AssertExpectations(t)
+}

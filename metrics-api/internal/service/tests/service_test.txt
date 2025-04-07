@@ -1,0 +1,1212 @@
+/*package service
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"metrics-api/internal/models"
+	"metrics-api/internal/prometheus"
+	"metrics-api/pkg/logger"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+)
+
+// MockLogger is a mock implementation of the logger.Logger interface
+type MockLogger struct {
+	mock.Mock
+}
+
+type MockPrometheusClient struct {
+	mock.Mock 
+}
+
+func (m *MockLogger) Info(args ...interface{}) {
+	m.Called(args)
+}
+
+func (m *MockLogger) Infof(format string, args ...interface{}) {
+	m.Called(format, args)
+}
+
+func (m *MockLogger) Debug(args ...interface{}) {
+	m.Called(args)
+}
+
+func (m *MockLogger) Debugf(format string, args ...interface{}) {
+	m.Called(format, args)
+}
+
+func (m *MockLogger) Warn(args ...interface{}) {
+	m.Called(args)
+}
+
+func (m *MockLogger) Warnf(format string, args ...interface{}) {
+	m.Called(format, args)
+}
+
+func (m *MockLogger) Error(args ...interface{}) {
+	m.Called(args)
+}
+
+func (m *MockLogger) Errorf(format string, args ...interface{}) {
+	m.Called(format, args)
+}
+
+func (m *MockLogger) Fatal(args ...interface{}) {
+	m.Called(args)
+}
+
+func (m *MockLogger) Fatalf(format string, args ...interface{}) {
+	m.Called(format, args)
+}
+
+func (m *MockLogger) With(fields map[string]interface{}) logger.Logger {
+	args := m.Called(fields)
+	return args.Get(0).(logger.Logger)
+}
+
+func (m *MockLogger) Sync() error {
+	args := m.Called()
+	return args.Error(0)
+}
+
+// TestMetricsService_GetMetrics tests the GetMetrics method
+func TestMetricsService_GetMetrics(t *testing.T) {
+	// Create mock client
+	mockClient := new(MockPrometheusClient)
+	mockLogger := new(MockLogger)
+	
+	// Set up logger expectations
+	mockLogger.On("Debugf", mock.Anything, mock.Anything).Return()
+	mockLogger.On("Errorf", mock.Anything, mock.Anything).Return()
+	
+	// Create service with mock client
+	service := NewMetricsService(mockClient, mockLogger)
+	
+	// Test case 1: Successful metrics retrieval
+	t.Run("Successful metrics retrieval", func(t *testing.T) {
+		// Setup test data
+		expectedMetrics := []string{
+			"http_requests_total",
+			"node_cpu_seconds_total",
+			"node_memory_MemFree_bytes",
+		}
+		
+		// Setup expectations
+		mockClient.On("GetMetrics", mock.Anything).Return(expectedMetrics, nil).Once()
+		
+		// Call the method
+		metrics, err := service.GetMetrics(context.Background())
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Equal(t, expectedMetrics, metrics)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 2: Error retrieving metrics
+	t.Run("Error retrieving metrics", func(t *testing.T) {
+		// Setup expectations
+		expectedError := errors.New("failed to connect to Prometheus")
+		mockClient.On("GetMetrics", mock.Anything).Return([]string{}, expectedError).Once()
+		
+		// Call the method
+		metrics, err := service.GetMetrics(context.Background())
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Empty(t, metrics)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+}
+
+// TestMetricsService_GetTopMetrics tests the GetTopMetrics method
+func TestMetricsService_GetTopMetrics(t *testing.T) {
+	// Create mock client
+	mockClient := new(MockPrometheusClient)
+	mockLogger := new(MockLogger)
+	
+	// Set up logger expectations
+	mockLogger.On("Debugf", mock.Anything, mock.Anything).Return()
+	mockLogger.On("Errorf", mock.Anything, mock.Anything).Return()
+	mockLogger.On("Warnf", mock.Anything, mock.Anything).Return()
+	
+	// Create service with mock client
+	service := NewMetricsService(mockClient, mockLogger)
+	
+	// Test case 1: Successful retrieval of top metrics
+	t.Run("Successful retrieval of top metrics", func(t *testing.T) {
+		// Setup test data
+		metrics := []string{
+			"http_requests_total",
+			"node_cpu_seconds_total",
+		}
+		
+		cardinalityResults1 := []prometheus.QueryResult{
+			{
+				Value: 100.0,
+			},
+		}
+		
+		cardinalityResults2 := []prometheus.QueryResult{
+			{
+				Value: 50.0,
+			},
+		}
+		
+		rateResults1 := []prometheus.QueryResult{
+			{
+				Value: 5.0,
+			},
+		}
+		
+		rateResults2 := []prometheus.QueryResult{
+			{
+				Value: 2.0,
+			},
+		}
+		
+		// Setup expectations
+		mockClient.On("GetMetrics", mock.Anything).Return(metrics, nil).Once()
+		mockClient.On("Query", mock.Anything, "count(http_requests_total)", mock.Anything).Return(cardinalityResults1, nil).Once()
+		mockClient.On("Query", mock.Anything, "count(node_cpu_seconds_total)", mock.Anything).Return(cardinalityResults2, nil).Once()
+		mockClient.On("Query", mock.Anything, "rate(http_requests_total[5m])", mock.Anything).Return(rateResults1, nil).Once()
+		mockClient.On("Query", mock.Anything, "rate(node_cpu_seconds_total[5m])", mock.Anything).Return(rateResults2, nil).Once()
+		
+		// Call the method
+		topMetrics, err := service.GetTopMetrics(context.Background(), 2)
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Len(t, topMetrics, 2)
+		assert.Equal(t, "http_requests_total", topMetrics[0].Name)
+		assert.Equal(t, 100, topMetrics[0].Cardinality)
+		assert.Equal(t, 5.0, topMetrics[0].SampleRate)
+		assert.Equal(t, "node_cpu_seconds_total", topMetrics[1].Name)
+		assert.Equal(t, 50, topMetrics[1].Cardinality)
+		assert.Equal(t, 2.0, topMetrics[1].SampleRate)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 2: Error getting metrics
+	t.Run("Error getting metrics", func(t *testing.T) {
+		// Setup expectations
+		expectedError := errors.New("failed to connect to Prometheus")
+		mockClient.On("GetMetrics", mock.Anything).Return([]string{}, expectedError).Once()
+		
+		// Call the method
+		topMetrics, err := service.GetTopMetrics(context.Background(), 2)
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Empty(t, topMetrics)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+}
+
+// TestMetricsService_GetMetricSummary tests the GetMetricSummary method
+func TestMetricsService_GetMetricSummary(t *testing.T) {
+	// Create mock client
+	mockClient := new(MockPrometheusClient)
+	mockLogger := new(MockLogger)
+	
+	// Set up logger expectations
+	mockLogger.On("Debugf", mock.Anything, mock.Anything).Return()
+	mockLogger.On("Errorf", mock.Anything, mock.Anything, mock.Anything).Return()
+	mockLogger.On("Warnf", mock.Anything, mock.Anything, mock.Anything).Return()
+	
+	// Create service with mock client
+	service := NewMetricsService(mockClient, mockLogger)
+	
+	// Test case 1: Successful metric summary retrieval
+	t.Run("Successful metric summary retrieval", func(t *testing.T) {
+		// Setup test data
+		metricName := "http_requests_total"
+		labels := []string{"method", "status", "handler"}
+		
+		queryResults := []prometheus.QueryResult{
+			{
+				MetricName: metricName,
+				Labels: map[string]string{
+					"method": "GET",
+					"status": "200",
+				},
+				Value:     42.0,
+				Timestamp: time.Now(),
+			},
+		}
+		
+		cardinalityResults := []prometheus.QueryResult{
+			{
+				Value: 10.0,
+			},
+		}
+		
+		minResults := []prometheus.QueryResult{
+			{
+				Value: 5.0,
+			},
+		}
+		
+		maxResults := []prometheus.QueryResult{
+			{
+				Value: 100.0,
+			},
+		}
+		
+		avgResults := []prometheus.QueryResult{
+			{
+				Value: 50.0,
+			},
+		}
+		
+		// Setup expectations
+		mockClient.On("GetLabelsForMetric", mock.Anything, metricName).Return(labels, nil).Once()
+		mockClient.On("Query", mock.Anything, metricName, mock.Anything).Return(queryResults, nil).Once()
+		mockClient.On("Query", mock.Anything, "count(http_requests_total)", mock.Anything).Return(cardinalityResults, nil).Once()
+		mockClient.On("Query", mock.Anything, "min_over_time(http_requests_total[1h])", mock.Anything).Return(minResults, nil).Once()
+		mockClient.On("Query", mock.Anything, "max_over_time(http_requests_total[1h])", mock.Anything).Return(maxResults, nil).Once()
+		mockClient.On("Query", mock.Anything, "avg_over_time(http_requests_total[1h])", mock.Anything).Return(avgResults, nil).Once()
+		
+		// Call the method
+		summary, err := service.GetMetricSummary(context.Background(), metricName)
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Equal(t, metricName, summary.Name)
+		assert.Equal(t, labels, summary.Labels)
+		assert.Equal(t, 10, summary.Cardinality)
+		assert.Equal(t, 5.0, summary.Stats.Min)
+		assert.Equal(t, 100.0, summary.Stats.Max)
+		assert.Equal(t, 50.0, summary.Stats.Avg)
+		assert.Len(t, summary.Samples, 1)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 2: Error getting labels
+	t.Run("Error getting labels", func(t *testing.T) {
+		// Setup test data
+		metricName := "http_requests_total"
+		expectedError := errors.New("failed to get labels")
+		
+		// Setup expectations
+		mockClient.On("GetLabelsForMetric", mock.Anything, metricName).Return([]string{}, expectedError).Once()
+		
+		// Call the method
+		summary, err := service.GetMetricSummary(context.Background(), metricName)
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Nil(t, summary)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+}
+
+// TestMetricsService_GetMetricHealth tests the GetMetricHealth method
+func TestMetricsService_GetMetricHealth(t *testing.T) {
+	// Create mock client
+	mockClient := new(MockPrometheusClient)
+	mockLogger := new(MockLogger)
+	
+	// Set up logger expectations
+	mockLogger.On("Errorf", mock.Anything, mock.Anything, mock.Anything).Return()
+	mockLogger.On("Warnf", mock.Anything, mock.Anything, mock.Anything).Return()
+	
+	// Create service with mock client
+	service := NewMetricsService(mockClient, mockLogger)
+	
+	// Test case 1: Successful health check
+	t.Run("Successful health check", func(t *testing.T) {
+		// Setup test data
+		metricName := "http_requests_total"
+		now := time.Now()
+		
+		existenceResults := []prometheus.QueryResult{
+			{
+				Value: 1.0,
+			},
+		}
+		
+		scrapeResults := []prometheus.QueryResult{
+			{
+				Value:     1.0,
+				Timestamp: now.Add(-1 * time.Minute),
+			},
+		}
+		
+		gapResults := []prometheus.QueryResult{
+			{
+				Value: 1.0,
+			},
+		}
+		
+		// Setup expectations
+		mockClient.On("Query", mock.Anything, "count(http_requests_total)", mock.Anything).Return(existenceResults, nil).Once()
+		mockClient.On("Query", mock.Anything, "scrape_time_seconds{instance=~\".+\", job=~\".+\"} > 0", mock.Anything).Return(scrapeResults, nil).Once()
+		mockClient.On("Query", mock.Anything, "count_over_time(http_requests_total[5m]) > 0", mock.Anything).Return(gapResults, nil).Once()
+		
+		// Call the method
+		health, err := service.GetMetricHealth(context.Background(), metricName)
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Equal(t, metricName, health.Name)
+		assert.True(t, health.Exists)
+		assert.False(t, health.IsStale)
+		assert.False(t, health.HasGaps)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 2: Metric does not exist
+	t.Run("Metric does not exist", func(t *testing.T) {
+		// Setup test data
+		metricName := "nonexistent_metric"
+		
+		// Setup expectations
+		mockClient.On("Query", mock.Anything, "count(nonexistent_metric)", mock.Anything).Return([]prometheus.QueryResult{}, nil).Once()
+		mockClient.On("Query", mock.Anything, "scrape_time_seconds{instance=~\".+\", job=~\".+\"} > 0", mock.Anything).Return([]prometheus.QueryResult{}, nil).Once()
+		mockClient.On("Query", mock.Anything, "count_over_time(nonexistent_metric[5m]) > 0", mock.Anything).Return([]prometheus.QueryResult{}, nil).Once()
+		
+		// Call the method
+		health, err := service.GetMetricHealth(context.Background(), metricName)
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Equal(t, metricName, health.Name)
+		assert.False(t, health.Exists)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 3: Error querying metric existence
+	t.Run("Error querying metric existence", func(t *testing.T) {
+		// Setup test data
+		metricName := "http_requests_total"
+		expectedError := errors.New("query failed")
+		
+		// Setup expectations
+		mockClient.On("Query", mock.Anything, "count(http_requests_total)", mock.Anything).Return(nil, expectedError).Once()
+		
+		// Call the method
+		health, err := service.GetMetricHealth(context.Background(), metricName)
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Nil(t, health)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+}
+
+// TestQueriesService_ExecuteInstantQuery tests the ExecuteInstantQuery method
+func TestQueriesService_ExecuteInstantQuery(t *testing.T) {
+	// Create mock client
+	mockClient := new(MockPrometheusClient)
+	mockLogger := new(MockLogger)
+	
+	// Set up logger expectations
+	mockLogger.On("Infof", mock.Anything, mock.Anything, mock.Anything).Return()
+	mockLogger.On("Errorf", mock.Anything, mock.Anything, mock.Anything).Return()
+	
+	// Create service with mock client
+	service := NewQueriesService(mockClient, mockLogger)
+	
+	// Test case 1: Successful query execution
+	t.Run("Successful query execution", func(t *testing.T) {
+		// Setup test data
+		query := "http_requests_total"
+		queryTime := time.Now()
+		
+		queryResults := []prometheus.QueryResult{
+			{
+				MetricName: "http_requests_total",
+				Labels: map[string]string{
+					"method": "GET",
+					"status": "200",
+				},
+				Value:     42.0,
+				Timestamp: queryTime,
+			},
+		}
+		
+		// Setup expectations
+		mockClient.On("Query", mock.Anything, query, queryTime).Return(queryResults, nil).Once()
+		
+		// Call the method
+		queryParams := models.InstantQueryParams{
+			Query: query,
+			Time:  queryTime,
+		}
+		
+		response, err := service.ExecuteInstantQuery(context.Background(), queryParams)
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Equal(t, query, response.Query)
+		assert.Equal(t, queryTime, response.QueryTime)
+		assert.Equal(t, "success", response.Status)
+		assert.Len(t, response.Data, 1)
+		assert.Equal(t, "http_requests_total", response.Data[0].MetricName)
+		assert.Equal(t, 42.0, response.Data[0].Value)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 2: Empty query
+	t.Run("Empty query", func(t *testing.T) {
+		// Call the method with empty query
+		queryParams := models.InstantQueryParams{
+			Query: "",
+			Time:  time.Now(),
+		}
+		
+		response, err := service.ExecuteInstantQuery(context.Background(), queryParams)
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Equal(t, models.ErrInvalidQuery, err)
+		assert.Nil(t, response)
+	})
+	
+	// Test case 3: Query execution error
+	t.Run("Query execution error", func(t *testing.T) {
+		// Setup test data
+		query := "invalid_query{"
+		queryTime := time.Now()
+		expectedError := errors.New("query syntax error")
+		
+		// Setup expectations
+		mockClient.On("Query", mock.Anything, query, queryTime).Return(nil, expectedError).Once()
+		
+		// Call the method
+		queryParams := models.InstantQueryParams{
+			Query: query,
+			Time:  queryTime,
+		}
+		
+		response, err := service.ExecuteInstantQuery(context.Background(), queryParams)
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Nil(t, response)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+}
+
+// TestQueriesService_ExecuteRangeQuery tests the ExecuteRangeQuery method
+func TestQueriesService_ExecuteRangeQuery(t *testing.T) {
+	// Create mock client
+	mockClient := new(MockPrometheusClient)
+	mockLogger := new(MockLogger)
+	
+	// Set up logger expectations
+	mockLogger.On("Infof", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return()
+	mockLogger.On("Errorf", mock.Anything, mock.Anything, mock.Anything).Return()
+	
+	// Create service with mock client
+	service := NewQueriesService(mockClient, mockLogger)
+	service.WithMaxPoints(1000)
+	
+	// Test case 1: Successful range query execution
+	t.Run("Successful range query execution", func(t *testing.T) {
+		// Setup test data
+		query := "rate(http_requests_total[5m])"
+		start := time.Now().Add(-1 * time.Hour)
+		end := time.Now()
+		step := 60 // 60 seconds
+		
+		timeValuePairs := []prometheus.TimeValuePair{
+			{
+				Timestamp: start,
+				Value:     10.0,
+			},
+			{
+				Timestamp: start.Add(time.Duration(step) * time.Second),
+				Value:     20.0,
+			},
+		}
+		
+		rangeResults := []prometheus.RangeQueryResult{
+			{
+				MetricName: "rate(http_requests_total[5m])",
+				Labels: map[string]string{
+					"method": "GET",
+					"status": "200",
+				},
+				Values: timeValuePairs,
+			},
+		}
+		
+		// Setup range
+		r := prometheus.Range{
+			Start: start,
+			End:   end,
+			Step:  time.Duration(step) * time.Second,
+		}
+		
+		// Setup expectations
+		mockClient.On("QueryRange", mock.Anything, query, mock.MatchedBy(func(arg prometheus.Range) bool {
+			return arg.Start.Equal(start) && arg.End.Equal(end) && arg.Step == time.Duration(step)*time.Second
+		})).Return(rangeResults, nil).Once()
+		
+		// Call the method
+		queryParams := models.RangeQueryParams{
+			Query: query,
+			Start: start,
+			End:   end,
+			Step:  step,
+		}
+		
+		response, err := service.ExecuteRangeQuery(context.Background(), queryParams)
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Equal(t, query, response.Query)
+		assert.Equal(t, start, response.Start)
+		assert.Equal(t, end, response.End)
+		assert.Equal(t, time.Duration(step)*time.Second, response.Step)
+		assert.Equal(t, "success", response.Status)
+		assert.Len(t, response.Series, 1)
+		assert.Equal(t, "rate(http_requests_total[5m])", response.Series[0].MetricName)
+		assert.Len(t, response.Series[0].DataPoints, 2)
+		assert.Equal(t, 10.0, response.Series[0].DataPoints[0].Value)
+		assert.Equal(t, 20.0, response.Series[0].DataPoints[1].Value)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 2: Empty query
+	t.Run("Empty query", func(t *testing.T) {
+		// Call the method with empty query
+		queryParams := models.RangeQueryParams{
+			Query: "",
+			Start: time.Now().Add(-1 * time.Hour),
+			End:   time.Now(),
+			Step:  60,
+		}
+		
+		response, err := service.ExecuteRangeQuery(context.Background(), queryParams)
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Equal(t, models.ErrInvalidQuery, err)
+		assert.Nil(t, response)
+	})
+	
+	// Test case 3: Invalid time range
+	t.Run("Invalid time range", func(t *testing.T) {
+		// Call the method with end before start
+		queryParams := models.RangeQueryParams{
+			Query: "rate(http_requests_total[5m])",
+			Start: time.Now(),
+			End:   time.Now().Add(-1 * time.Hour), // End is before start
+			Step:  60,
+		}
+		
+		response, err := service.ExecuteRangeQuery(context.Background(), queryParams)
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Equal(t, models.ErrInvalidTimeRange, err)
+		assert.Nil(t, response)
+	})
+	
+	// Test case 4: Too many data points
+	t.Run("Too many data points", func(t *testing.T) {
+		// Setup test data for too many points
+		query := "rate(http_requests_total[5m])"
+		start := time.Now().Add(-24 * time.Hour) // 24 hours
+		end := time.Now()
+		step := 1 // 1 second step (would generate 86400 points)
+		
+		// Call the method
+		queryParams := models.RangeQueryParams{
+			Query: query,
+			Start: start,
+			End:   end,
+			Step:  step,
+		}
+		
+		response, err := service.ExecuteRangeQuery(context.Background(), queryParams)
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "too many points")
+		assert.Nil(t, response)
+	})
+}
+
+// TestAlertsService_GetAlerts tests the GetAlerts method
+func TestAlertsService_GetAlerts(t *testing.T) {
+	// Create mock client
+	mockClient := new(MockPrometheusClient)
+	mockLogger := new(MockLogger)
+	
+	// Set up logger expectations
+	mockLogger.On("Info", mock.Anything).Return()
+	mockLogger.On("Errorf", mock.Anything, mock.Anything).Return()
+	
+	// Create service with mock client
+	service := NewAlertsService(mockClient, mockLogger)
+	
+	// Test case 1: Successful alerts retrieval
+	t.Run("Successful alerts retrieval", func(t *testing.T) {
+		// Setup test data
+		now := time.Now()
+		
+		promAlerts := []prometheus.Alert{
+			{
+				Name:  "HighErrorRate",
+				State: prometheus.AlertStateFiring,
+				Labels: map[string]string{
+					"severity": "critical",
+					"service":  "api",
+				},
+				Annotations: map[string]string{
+					"summary":     "High error rate detected",
+					"description": "Error rate above 5% for 5 minutes",
+				},
+				ActiveAt: now.Add(-10 * time.Minute),
+				Value:    0.08,
+			},
+			{
+				Name:  "HighLatency",
+				State: prometheus.AlertStatePending,
+				Labels: map[string]string{
+					"severity": "warning",
+					"service":  "db",
+				},
+				Annotations: map[string]string{
+					"summary": "High latency detected",
+				},
+				ActiveAt: now.Add(-5 * time.Minute),
+				Value:    0.2,
+			},
+		}
+		
+		// Setup expectations
+		mockClient.On("GetAlerts", mock.Anything).Return(promAlerts, nil).Once()
+		
+		// Call the method
+		alerts, err := service.GetAlerts(context.Background())
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Len(t, alerts, 2)
+		
+		// Check first alert
+		assert.Equal(t, "HighErrorRate", alerts[0].Name)
+		assert.Equal(t, "firing", alerts[0].State)
+		assert.Equal(t, "critical", alerts[0].Severity)
+		assert.Equal(t, "High error rate detected", alerts[0].Summary)
+		assert.Equal(t, 0.08, alerts[0].Value)
+		
+		// Check second alert
+		assert.Equal(t, "HighLatency", alerts[1].Name)
+		assert.Equal(t, "pending", alerts[1].State)
+		assert.Equal(t, "warning", alerts[1].Severity)
+		assert.Equal(t, "High latency detected", alerts[1].Summary)
+		assert.Equal(t, 0.2, alerts[1].Value)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 2: Error retrieving alerts
+	t.Run("Error retrieving alerts", func(t *testing.T) {
+		// Setup expectations
+		expectedError := errors.New("failed to connect to Prometheus")
+		mockClient.On("GetAlerts", mock.Anything).Return(nil, expectedError).Once()
+		
+		// Call the method
+		alerts, err := service.GetAlerts(context.Background())
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Empty(t, alerts)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+}
+
+// TestAlertsService_GetAlertSummary tests the GetAlertSummary method
+func TestAlertsService_GetAlertSummary(t *testing.T) {
+	// Create mock client
+	mockClient := new(MockPrometheusClient)
+	mockLogger := new(MockLogger)
+	
+	// Set up logger expectations
+	mockLogger.On("Info", mock.Anything).Return()
+	mockLogger.On("Errorf", mock.Anything, mock.Anything).Return()
+	
+	// Create service with mock client
+	service := NewAlertsService(mockClient, mockLogger)
+	
+	// Test case 1: Successful alert summary retrieval
+	t.Run("Successful alert summary retrieval", func(t *testing.T) {
+		// Setup test data
+		now := time.Now()
+		
+		promAlerts := []prometheus.Alert{
+			{
+				Name:  "HighErrorRate",
+				State: prometheus.AlertStateFiring,
+				Labels: map[string]string{
+					"severity": "critical",
+					"service":  "api",
+				},
+				Annotations: map[string]string{
+					"summary": "High error rate detected",
+				},
+				ActiveAt: now.Add(-10 * time.Minute),
+			},
+			{
+				Name:  "HighLatency",
+				State: prometheus.AlertStatePending,
+				Labels: map[string]string{
+					"severity": "warning",
+					"service":  "db",
+				},
+				Annotations: map[string]string{
+					"summary": "High latency detected",
+				},
+				ActiveAt: now.Add(-5 * time.Minute), // This is the most recent
+			},
+			{
+				Name:  "LowDiskSpace",
+				State: prometheus.AlertStateFiring,
+				Labels: map[string]string{
+					"severity": "critical",
+					"service":  "storage",
+				},
+				Annotations: map[string]string{
+					"summary": "Low disk space",
+				},
+				ActiveAt: now.Add(-15 * time.Minute),
+			},
+		}
+		
+		// Setup expectations
+		mockClient.On("GetAlerts", mock.Anything).Return(promAlerts, nil).Once()
+		
+		// Call the method
+		summary, err := service.GetAlertSummary(context.Background())
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Equal(t, 2, summary.FiringCount)
+		assert.Equal(t, 1, summary.PendingCount)
+		assert.Equal(t, 0, summary.ResolvedCount)
+		assert.Equal(t, 3, summary.TotalCount)
+		
+		// Check severity breakdown
+		assert.Len(t, summary.SeverityBreakdown, 2)
+		assert.Equal(t, "critical", summary.SeverityBreakdown[0].Severity)
+		assert.Equal(t, 2, summary.SeverityBreakdown[0].Count)
+		assert.Equal(t, "warning", summary.SeverityBreakdown[1].Severity)
+		assert.Equal(t, 1, summary.SeverityBreakdown[1].Count)
+		
+		// Check most recent alert
+		assert.Equal(t, "HighLatency", summary.MostRecentAlert.Name)
+		assert.NotEmpty(t, summary.TimeSinceLastAlert)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 2: Error retrieving alerts
+	t.Run("Error retrieving alerts", func(t *testing.T) {
+		// Setup expectations
+		expectedError := errors.New("failed to connect to Prometheus")
+		mockClient.On("GetAlerts", mock.Anything).Return(nil, expectedError).Once()
+		
+		// Call the method
+		summary, err := service.GetAlertSummary(context.Background())
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Nil(t, summary)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 3: No alerts
+	t.Run("No alerts", func(t *testing.T) {
+		// Setup expectations
+		mockClient.On("GetAlerts", mock.Anything).Return([]prometheus.Alert{}, nil).Once()
+		
+		// Call the method
+		summary, err := service.GetAlertSummary(context.Background())
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Equal(t, 0, summary.FiringCount)
+		assert.Equal(t, 0, summary.PendingCount)
+		assert.Equal(t, 0, summary.ResolvedCount)
+		assert.Equal(t, 0, summary.TotalCount)
+		assert.Empty(t, summary.SeverityBreakdown)
+		assert.Empty(t, summary.MostRecentAlert.Name)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+}
+
+// TestAlertsService_GetAlertGroups tests the GetAlertGroups method
+func TestAlertsService_GetAlertGroups(t *testing.T) {
+	// Create mock client
+	mockClient := new(MockPrometheusClient)
+	mockLogger := new(MockLogger)
+	
+	// Set up logger expectations
+	mockLogger.On("Infof", mock.Anything, mock.Anything).Return()
+	mockLogger.On("Errorf", mock.Anything, mock.Anything).Return()
+	
+	// Create service with mock client
+	service := NewAlertsService(mockClient, mockLogger)
+	
+	// Test case 1: Group by severity
+	t.Run("Group by severity", func(t *testing.T) {
+		// Setup test data
+		now := time.Now()
+		
+		promAlerts := []prometheus.Alert{
+			{
+				Name:  "HighErrorRate",
+				State: prometheus.AlertStateFiring,
+				Labels: map[string]string{
+					"severity": "critical",
+					"service":  "api",
+				},
+				Annotations: map[string]string{
+					"summary": "High error rate detected",
+				},
+				ActiveAt: now.Add(-10 * time.Minute),
+			},
+			{
+				Name:  "HighLatency",
+				State: prometheus.AlertStatePending,
+				Labels: map[string]string{
+					"severity": "warning",
+					"service":  "db",
+				},
+				Annotations: map[string]string{
+					"summary": "High latency detected",
+				},
+				ActiveAt: now.Add(-5 * time.Minute),
+			},
+			{
+				Name:  "LowDiskSpace",
+				State: prometheus.AlertStateFiring,
+				Labels: map[string]string{
+					"severity": "critical",
+					"service":  "storage",
+				},
+				Annotations: map[string]string{
+					"summary": "Low disk space",
+				},
+				ActiveAt: now.Add(-15 * time.Minute),
+			},
+		}
+		
+		// Setup expectations
+		mockClient.On("GetAlerts", mock.Anything).Return(promAlerts, nil).Once()
+		
+		// Call the method
+		groups, err := service.GetAlertGroups(context.Background(), "severity")
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Len(t, groups, 2) // critical and warning
+		
+		// Find critical group
+		var criticalGroup, warningGroup *models.AlertGroup
+		for i, group := range groups {
+			if group.Name == "critical" {
+				criticalGroup = &groups[i]
+			} else if group.Name == "warning" {
+				warningGroup = &groups[i]
+			}
+		}
+		
+		// Check critical group
+		require.NotNil(t, criticalGroup)
+		assert.Equal(t, 2, criticalGroup.Count)
+		assert.Len(t, criticalGroup.Alerts, 2)
+		
+		// Check warning group
+		require.NotNil(t, warningGroup)
+		assert.Equal(t, 1, warningGroup.Count)
+		assert.Len(t, warningGroup.Alerts, 1)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 2: Group by service
+	t.Run("Group by service", func(t *testing.T) {
+		// Setup test data
+		now := time.Now()
+		
+		promAlerts := []prometheus.Alert{
+			{
+				Name:  "HighErrorRate",
+				State: prometheus.AlertStateFiring,
+				Labels: map[string]string{
+					"severity": "critical",
+					"service":  "api",
+				},
+				Annotations: map[string]string{
+					"summary": "High error rate detected",
+				},
+				ActiveAt: now.Add(-10 * time.Minute),
+			},
+			{
+				Name:  "HighLatency",
+				State: prometheus.AlertStatePending,
+				Labels: map[string]string{
+					"severity": "warning",
+					"service":  "db",
+				},
+				Annotations: map[string]string{
+					"summary": "High latency detected",
+				},
+				ActiveAt: now.Add(-5 * time.Minute),
+			},
+			{
+				Name:  "LowDiskSpace",
+				State: prometheus.AlertStateFiring,
+				Labels: map[string]string{
+					"severity": "critical",
+					"service":  "storage",
+				},
+				Annotations: map[string]string{
+					"summary": "Low disk space",
+				},
+				ActiveAt: now.Add(-15 * time.Minute),
+			},
+		}
+		
+		// Setup expectations
+		mockClient.On("GetAlerts", mock.Anything).Return(promAlerts, nil).Once()
+		
+		// Call the method
+		groups, err := service.GetAlertGroups(context.Background(), "service")
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Len(t, groups, 3) // api, db, storage
+		
+		// Verify each service has the right count
+		for _, group := range groups {
+			if group.Name == "api" {
+				assert.Equal(t, 1, group.Count)
+				assert.Len(t, group.Alerts, 1)
+				assert.Equal(t, "HighErrorRate", group.Alerts[0].Name)
+			} else if group.Name == "db" {
+				assert.Equal(t, 1, group.Count)
+				assert.Len(t, group.Alerts, 1)
+				assert.Equal(t, "HighLatency", group.Alerts[0].Name)
+			} else if group.Name == "storage" {
+				assert.Equal(t, 1, group.Count)
+				assert.Len(t, group.Alerts, 1)
+				assert.Equal(t, "LowDiskSpace", group.Alerts[0].Name)
+			}
+		}
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 3: Error retrieving alerts
+	t.Run("Error retrieving alerts", func(t *testing.T) {
+		// Setup expectations
+		expectedError := errors.New("failed to connect to Prometheus")
+		mockClient.On("GetAlerts", mock.Anything).Return(nil, expectedError).Once()
+		
+		// Call the method
+		groups, err := service.GetAlertGroups(context.Background(), "severity")
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Empty(t, groups)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+}
+
+// TestQueriesService_ValidateQuery tests the ValidateQuery method
+func TestQueriesService_ValidateQuery(t *testing.T) {
+	// Create mock client
+	mockClient := new(MockPrometheusClient)
+	mockLogger := new(MockLogger)
+	
+	// Set up logger expectations
+	mockLogger.On("Errorf", mock.Anything, mock.Anything).Return()
+	
+	// Create service with mock client
+	service := NewQueriesService(mockClient, mockLogger)
+	
+	// Test case 1: Valid query
+	t.Run("Valid query", func(t *testing.T) {
+		// Setup test data
+		query := "http_requests_total"
+		
+		// Setup expectations
+		mockClient.On("Query", mock.Anything, query, mock.Anything).Return([]prometheus.QueryResult{}, nil).Once()
+		
+		// Call the method
+		validation, err := service.ValidateQuery(context.Background(), query)
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.True(t, validation.Valid)
+		assert.Equal(t, query, validation.Query)
+		assert.Equal(t, "Query is valid", validation.Message)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 2: Invalid query
+	t.Run("Invalid query", func(t *testing.T) {
+		// Setup test data
+		query := "invalid_query{"
+		expectedError := errors.New("query syntax error")
+		
+		// Setup expectations
+		mockClient.On("Query", mock.Anything, query, mock.Anything).Return(nil, expectedError).Once()
+		
+		// Call the method
+		validation, err := service.ValidateQuery(context.Background(), query)
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.False(t, validation.Valid)
+		assert.Equal(t, query, validation.Query)
+		assert.Contains(t, validation.Message, "Query validation failed")
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 3: Empty query
+	t.Run("Empty query", func(t *testing.T) {
+		// Call the method with empty query
+		validation, err := service.ValidateQuery(context.Background(), "")
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.False(t, validation.Valid)
+		assert.Equal(t, "", validation.Query)
+		assert.Equal(t, "Query cannot be empty", validation.Message)
+	})
+}
+
+// TestQueriesService_GetQuerySuggestions tests the GetQuerySuggestions method
+func TestQueriesService_GetQuerySuggestions(t *testing.T) {
+	// Create mock client
+	mockClient := new(MockPrometheusClient)
+	mockLogger := new(MockLogger)
+	
+	// Set up logger expectations
+	mockLogger.On("Errorf", mock.Anything, mock.Anything).Return()
+	
+	// Create service with mock client
+	service := NewQueriesService(mockClient, mockLogger)
+	
+	// Test case 1: Get suggestions without prefix
+	t.Run("Get suggestions without prefix", func(t *testing.T) {
+		// Setup test data
+		metrics := []string{
+			"http_requests_total",
+			"node_cpu_seconds_total",
+			"node_memory_MemFree_bytes",
+		}
+		
+		// Setup expectations
+		mockClient.On("GetMetrics", mock.Anything).Return(metrics, nil).Once()
+		
+		// Call the method
+		suggestions, err := service.GetQuerySuggestions(context.Background(), "", 10)
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.NotEmpty(t, suggestions)
+		assert.Contains(t, suggestions, "http_requests_total")
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 2: Get suggestions with prefix
+	t.Run("Get suggestions with prefix", func(t *testing.T) {
+		// Setup test data
+		metrics := []string{
+			"http_requests_total",
+			"node_cpu_seconds_total",
+			"node_memory_MemFree_bytes",
+		}
+		
+		// Setup expectations
+		mockClient.On("GetMetrics", mock.Anything).Return(metrics, nil).Once()
+		
+		// Call the method
+		suggestions, err := service.GetQuerySuggestions(context.Background(), "node", 10)
+		
+		// Check results
+		assert.NoError(t, err)
+		assert.Len(t, suggestions, 2)
+		assert.Contains(t, suggestions, "node_cpu_seconds_total")
+		assert.Contains(t, suggestions, "node_memory_MemFree_bytes")
+		assert.NotContains(t, suggestions, "http_requests_total")
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+	
+	// Test case 3: Error getting metrics
+	t.Run("Error getting metrics", func(t *testing.T) {
+		// Setup expectations
+		expectedError := errors.New("failed to connect to Prometheus")
+		mockClient.On("GetMetrics", mock.Anything).Return([]string{}, expectedError).Once()
+		
+		// Call the method
+		suggestions, err := service.GetQuerySuggestions(context.Background(), "", 10)
+		
+		// Check results
+		assert.Error(t, err)
+		assert.Empty(t, suggestions)
+		
+		// Verify mock expectations
+		mockClient.AssertExpectations(t)
+	})
+}
+	*/

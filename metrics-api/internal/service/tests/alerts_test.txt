@@ -1,0 +1,234 @@
+package service
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"metrics-api/internal/prometheus"
+	"metrics-api/pkg/logger"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+)
+
+// GetAlerts mocks the GetAlerts method
+func (m *MockPrometheusClient) GetAlerts(ctx context.Context) ([]prometheus.Alert, error) {
+	args := m.Called(ctx)
+	return args.Get(0).([]prometheus.Alert), args.Error(1)
+}
+
+
+// TestGetAlerts tests the GetAlerts method
+func TestGetAlerts(t *testing.T) {
+	mockClient := &MockPrometheusClient{}
+	mockLogger := logger.NewNopLogger()
+
+	now := time.Now()
+
+	promAlerts := []prometheus.Alert{
+		{
+			Name:  "HighErrorRate",
+			State: prometheus.AlertStateFiring,
+			Labels: map[string]string{
+				"severity": "critical",
+				"service":  "api",
+			},
+			Annotations: map[string]string{
+				"summary":     "High error rate detected",
+				"description": "Error rate above 5% for 5 minutes",
+			},
+			ActiveAt: now.Add(-10 * time.Minute),
+			Value:    0.08,
+		},
+		{
+			Name:  "HighLatency",
+			State: prometheus.AlertStatePending,
+			Labels: map[string]string{
+				"severity": "warning",
+				"service":  "db",
+			},
+			Annotations: map[string]string{
+				"summary": "High latency detected",
+			},
+			ActiveAt: now.Add(-5 * time.Minute),
+			Value:    0.2,
+		},
+	}
+
+	mockClient.On("GetAlerts", mock.Anything).Return(promAlerts, nil)
+
+	service := NewAlertsService(mockClient, mockLogger)
+
+	alerts, err := service.GetAlerts(context.Background())
+
+	assert.NoError(t, err)
+	assert.Len(t, alerts, 2)
+
+	assert.Equal(t, "HighErrorRate", alerts[0].Name)
+	assert.Equal(t, "firing", alerts[0].State)
+	assert.Equal(t, "critical", alerts[0].Severity)
+	assert.Equal(t, "High error rate detected", alerts[0].Summary)
+	assert.Equal(t, "Error rate above 5% for 5 minutes", alerts[0].Annotations["description"])
+	assert.Equal(t, 0.08, alerts[0].Value)
+
+	assert.Equal(t, "HighLatency", alerts[1].Name)
+	assert.Equal(t, "pending", alerts[1].State)
+	assert.Equal(t, "warning", alerts[1].Severity)
+	assert.Equal(t, "High latency detected", alerts[1].Summary)
+	assert.Equal(t, 0.2, alerts[1].Value)
+
+	assert.Equal(t, "HighErrorRate", alerts[0].Name) // firing comes first
+	assert.Equal(t, "HighLatency", alerts[1].Name)   // pending comes after
+
+	mockClient.AssertExpectations(t)
+}
+
+// TestGetAlertGroups tests the GetAlertGroups method
+func TestGetAlertGroups(t *testing.T) {
+	mockClient := &MockPrometheusClient{}
+	mockLogger := logger.NewNopLogger()
+
+	now := time.Now()
+
+	promAlerts := []prometheus.Alert{
+		{
+			Name:  "HighErrorRate",
+			State: prometheus.AlertStateFiring,
+			Labels: map[string]string{
+				"severity": "critical",
+				"service":  "api",
+			},
+			Annotations: map[string]string{
+				"summary": "High error rate detected",
+			},
+			ActiveAt: now.Add(-10 * time.Minute),
+		},
+		{
+			Name:  "HighLatency",
+			State: prometheus.AlertStatePending,
+			Labels: map[string]string{
+				"severity": "warning",
+				"service":  "db",
+			},
+			Annotations: map[string]string{
+				"summary": "High latency detected",
+			},
+			ActiveAt: now.Add(-5 * time.Minute),
+		},
+		{
+			Name:  "LowDiskSpace",
+			State: prometheus.AlertStateFiring,
+			Labels: map[string]string{
+				"severity": "critical",
+				"service":  "storage",
+			},
+			Annotations: map[string]string{
+				"summary": "Low disk space",
+			},
+			ActiveAt: now.Add(-15 * time.Minute),
+		},
+	}
+
+	mockClient.On("GetAlerts", mock.Anything).Return(promAlerts, nil)
+
+	service := NewAlertsService(mockClient, mockLogger)
+
+	severityGroups, err := service.GetAlertGroups(context.Background(), "severity")
+
+	assert.NoError(t, err)
+	assert.Len(t, severityGroups, 2)
+
+	assert.Equal(t, "critical", severityGroups[0].Name)
+	assert.Equal(t, 2, severityGroups[0].Count)
+	assert.Equal(t, "warning", severityGroups[1].Name)
+	assert.Equal(t, 1, severityGroups[1].Count)
+
+	serviceGroups, err := service.GetAlertGroups(context.Background(), "service")
+
+	assert.NoError(t, err)
+	assert.Len(t, serviceGroups, 3)
+
+	assert.Equal(t, "api", serviceGroups[0].Name)
+	assert.Equal(t, 1, serviceGroups[0].Count)
+	assert.Equal(t, "db", serviceGroups[1].Name)
+	assert.Equal(t, 1, serviceGroups[1].Count)
+	assert.Equal(t, "storage", serviceGroups[2].Name)
+	assert.Equal(t, 1, serviceGroups[2].Count)
+
+	mockClient.AssertExpectations(t)
+}
+
+// TestGetAlertSummary tests the GetAlertSummary method
+func TestGetAlertSummary(t *testing.T) {
+	mockClient := &MockPrometheusClient{}
+	mockLogger := logger.NewNopLogger()
+
+	now := time.Now()
+
+	promAlerts := []prometheus.Alert{
+		{
+			Name:  "HighErrorRate",
+			State: prometheus.AlertStateFiring,
+			Labels: map[string]string{
+				"severity": "critical",
+				"service":  "api",
+			},
+			Annotations: map[string]string{
+				"summary": "High error rate detected",
+			},
+			ActiveAt: now.Add(-10 * time.Minute),
+		},
+		{
+			Name:  "HighLatency",
+			State: prometheus.AlertStatePending,
+			Labels: map[string]string{
+				"severity": "warning",
+				"service":  "db",
+			},
+			Annotations: map[string]string{
+				"summary": "High latency detected",
+			},
+			ActiveAt: now.Add(-5 * time.Minute),
+		},
+		{
+			Name:  "LowDiskSpace",
+			State: prometheus.AlertStateFiring,
+			Labels: map[string]string{
+				"severity": "critical",
+				"service":  "storage",
+			},
+			Annotations: map[string]string{
+				"summary": "Low disk space",
+			},
+			ActiveAt: now.Add(-15 * time.Minute),
+		},
+	}
+
+	mockClient.On("GetAlerts", mock.Anything).Return(promAlerts, nil)
+
+	service := NewAlertsService(mockClient, mockLogger)
+
+	summary, err := service.GetAlertSummary(context.Background())
+
+	assert.NoError(t, err)
+	assert.Equal(t, 2, summary.FiringCount)
+	assert.Equal(t, 1, summary.PendingCount)
+	assert.Equal(t, 0, summary.ResolvedCount)
+	assert.Equal(t, 3, summary.TotalCount)
+
+	assert.Len(t, summary.SeverityBreakdown, 2)
+	assert.Equal(t, "critical", summary.SeverityBreakdown[0].Severity)
+	assert.Equal(t, 2, summary.SeverityBreakdown[0].Count)
+	assert.Equal(t, "warning", summary.SeverityBreakdown[1].Severity)
+	assert.Equal(t, 1, summary.SeverityBreakdown[1].Count)
+
+	assert.Equal(t, "HighLatency", summary.MostRecentAlert.Name)
+	assert.Equal(t, "pending", summary.MostRecentAlert.State)
+	assert.Equal(t, "warning", summary.MostRecentAlert.Severity)
+	assert.Equal(t, "High latency detected", summary.MostRecentAlert.Summary)
+	assert.NotEmpty(t, summary.TimeSinceLastAlert)
+	assert.True(t, summary.LastUpdated.After(now))
+
+	mockClient.AssertExpectations(t)
+}
