@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-api
+  labels:
+    app: metrics-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: metrics-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: metrics-api
+    spec:
+      containers:
+      - name: metrics-api
+        image: ${METRICS_API_IMAGE}:${METRICS_API_VERSION}
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: SERVER_PORT
+          value: "8080"
+        - name: PROMETHEUS_URL
+          valueFrom:
+            configMapKeyRef:
+              name: metrics-api-config
+              key: prometheus_url
+        - name: PROMETHEUS_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: metrics-api-config
+              key: prometheus_timeout
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: metrics-api-config
+              key: log_level
+        - name: LOG_FORMAT
+          value: "json"
+        - name: CACHE_ENABLED
+          value: "true"
+        - name: CACHE_TTL
+          value: "60"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /api/v1/live
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /api/v1/ready
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: metrics-api-ingress
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+spec:
+  rules:
+  - host: metrics-api.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: metrics-api
+            port:
+              number: 80

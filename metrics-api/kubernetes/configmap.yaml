@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metrics-api-config
+data:
+  prometheus_url: "http://prometheus.monitoring.svc.cluster.local:9090"
+  prometheus_timeout: "30"
+  log_level: "info"
