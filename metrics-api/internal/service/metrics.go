@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -170,18 +171,11 @@ func (s *MetricsService) GetTopMetrics(ctx context.Context, limit int) ([]models
 		limit = 10 // Default limit
 	}
 	
-	// Get all metrics first
 	allMetrics, err := s.GetMetrics(ctx)
 	if err != nil {
 		return nil, err
 	}
 	
-	// Limit to first 100 metrics to avoid too many queries
-	if len(allMetrics) > 100 {
-		allMetrics = allMetrics[:100]
-	}
-	
-	// Query cardinality for each metric
 	now := time.Now()
 	topMetrics := make([]models.TopMetric, 0, len(allMetrics))
 	
@@ -193,16 +187,15 @@ func (s *MetricsService) GetTopMetrics(ctx context.Context, limit int) ([]models
 			continue
 		}
 		
-		var cardinality int
+		var cardinality float64
 		if len(results) > 0 {
-			cardinality = int(results[0].Value)
+			cardinality = results[0].Value
 		}
 		
-		// Also get sample rate (changes per minute) if possible
+		// Get sample rate
 		rateQuery := fmt.Sprintf("rate(%s[5m])", metricName)
 		rateResults, err := s.client.Query(ctx, rateQuery, now)
 		if err != nil {
-			// Rate queries might fail for some metrics, just log and continue
 			s.logger.Debugf("Rate query failed for %s: %v", metricName, err)
 		}
 		
@@ -211,11 +204,18 @@ func (s *MetricsService) GetTopMetrics(ctx context.Context, limit int) ([]models
 			sampleRate = rateResults[0].Value
 		}
 		
-		topMetrics = append(topMetrics, models.TopMetric{
+		// Handle NaN and Inf values
+		if math.IsNaN(sampleRate) || math.IsInf(sampleRate, 0) {
+			sampleRate = 0
+		}
+		
+		metric := models.TopMetric{
 			Name:        metricName,
-			Cardinality: cardinality,
+			Cardinality: int64(cardinality),
 			SampleRate:  sampleRate,
-		})
+		}
+		
+		topMetrics = append(topMetrics, metric)
 	}
 	
 	// Sort by cardinality (highest first)
