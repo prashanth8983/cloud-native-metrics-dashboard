@@ -28,15 +28,20 @@ type DataPoint struct {
 	Value      float64           `json:"value"`
 	Timestamp  time.Time         `json:"timestamp"`
 }
+type TopMetric struct {
+    Name        string  `json:"name"`
+    Cardinality int64   `json:"cardinality"`
+    SampleRate  float64 `json:"sample_rate"`
+}
 
 // RangeQueryResponse represents the response from a range query
 type RangeQueryResponse struct {
-	Query   string       `json:"query"`
-	Start   time.Time    `json:"start"`
-	End     time.Time    `json:"end"`
-	Step    time.Duration `json:"step"`
-	Status  string       `json:"status"`
-	Series  []TimeSeries `json:"series"`
+	Query  string       `json:"query"`
+	Start  time.Time    `json:"start"`
+	End    time.Time    `json:"end"`
+	Step   time.Duration `json:"step"`
+	Status string       `json:"status"`
+	Series []TimeSeries `json:"series"`
 }
 
 // TimeSeries represents a time series of data points
@@ -58,12 +63,12 @@ type InstantQueryParams struct {
 	Time  time.Time `json:"time"`
 }
 
-// RangeQueryParams represents parameters for a range query
+// RangeQueryParams represents the parameters for a range query
 type RangeQueryParams struct {
 	Query string    `json:"query"`
 	Start time.Time `json:"start"`
 	End   time.Time `json:"end"`
-	Step  int       `json:"step"` // Step in seconds
+	Step  string    `json:"step"`
 }
 
 // QueryValidation represents the result of validating a query
@@ -134,12 +139,7 @@ type MetricSample struct {
 	Timestamp time.Time         `json:"timestamp"`
 }
 
-// TopMetric represents a metric with additional information
-type TopMetric struct {
-	Name        string  `json:"name"`
-	Cardinality int     `json:"cardinality"`
-	SampleRate  float64 `json:"sample_rate,omitempty"`
-}
+
 
 // MetricHealth represents the health status of a metric
 type MetricHealth struct {
