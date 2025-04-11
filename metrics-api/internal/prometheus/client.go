@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"metrics-api/internal/cache"
 	"metrics-api/pkg/logger"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -70,7 +71,7 @@ type Alert struct {
 }
 
 // NewClient creates a new Prometheus client
-func NewClient(url string) (*Client, error) {
+func NewClient(url string, logger logger.Logger, cache *cache.Cache) (*Client, error) {
 	client, err := api.NewClient(api.Config{
 		Address: url,
 	})
@@ -81,6 +82,8 @@ func NewClient(url string) (*Client, error) {
 	return &Client{
 		api:     v1.NewAPI(client),
 		timeout: 30 * time.Second,
+		logger:  logger,
+		cache:   cache,
 	}, nil
 }
 
@@ -92,22 +95,38 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 
 // Query performs an instant query against Prometheus
 func (c *Client) Query(ctx context.Context, query string, ts time.Time) ([]QueryResult, error) {
+	if query == "" {
+		return nil, fmt.Errorf("empty query")
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
+	c.logger.Debug("executing query", "query", query, "timestamp", ts)
+	
 	value, warnings, err := c.api.Query(ctx, query, ts)
 	if err != nil {
+		c.logger.Error("query failed", "query", query, "error", err)
 		return nil, fmt.Errorf("error querying Prometheus: %w", err)
 	}
 
 	if len(warnings) > 0 {
-		// Log warnings, but continue processing
 		for _, w := range warnings {
-			fmt.Printf("Warning: %s\n", w)
+			c.logger.Warn("query warning", "query", query, "warning", w)
 		}
 	}
 
-	return parseQueryResponse(value)
+	if value == nil {
+		return []QueryResult{}, nil
+	}
+
+	results, err := parseQueryResponse(value)
+	if err != nil {
+		c.logger.Error("failed to parse query response", "error", err)
+		return nil, fmt.Errorf("error parsing query response: %w", err)
+	}
+
+	return results, nil
 }
 
 // QueryRange performs a range query against Prometheus
@@ -215,14 +234,16 @@ func (c *Client) GetLabelsForMetric(ctx context.Context, metricName string) ([]s
 
 // parseQueryResponse converts a Prometheus query result to our internal format
 func parseQueryResponse(value model.Value) ([]QueryResult, error) {
+	if value == nil {
+		return []QueryResult{}, nil
+	}
+
 	var results []QueryResult
 
 	switch v := value.(type) {
 	case model.Vector:
 		for _, sample := range v {
 			metricName := string(sample.Metric["__name__"])
-			
-			// Extract labels
 			labels := make(map[string]string)
 			for labelName, labelValue := range sample.Metric {
 				if labelName != "__name__" {
@@ -233,22 +254,48 @@ func parseQueryResponse(value model.Value) ([]QueryResult, error) {
 			results = append(results, QueryResult{
 				MetricName: metricName,
 				Labels:     labels,
-				Value:      float64(sample.Value),
-				Timestamp:  sample.Timestamp.Time(),
+				Value:     float64(sample.Value),
+				Timestamp: sample.Timestamp.Time(),
 			})
 		}
+
 	case *model.Scalar:
-		results = append(results, QueryResult{
-			MetricName: "scalar",
-			Labels:     map[string]string{},
-			Value:      float64(v.Value),
-			Timestamp:  v.Timestamp.Time(),
-		})
-	case *model.String:
-		// String results are unusual but possible
-		return nil, fmt.Errorf("string results not supported")
+		if v != nil {
+			results = append(results, QueryResult{
+				MetricName: "scalar",
+				Labels:     map[string]string{},
+				Value:     float64(v.Value),
+				Timestamp: v.Timestamp.Time(),
+			})
+		}
+
+	case model.Matrix:
+		// For matrix results, we'll take the latest value for each series
+		for _, series := range v {
+			if len(series.Values) == 0 {
+				continue
+			}
+			
+			metricName := string(series.Metric["__name__"])
+			labels := make(map[string]string)
+			for labelName, labelValue := range series.Metric {
+				if labelName != "__name__" {
+					labels[string(labelName)] = string(labelValue)
+				}
+			}
+			
+			// Get the latest value
+			latest := series.Values[len(series.Values)-1]
+			results = append(results, QueryResult{
+				MetricName: metricName,
+				Labels:     labels,
+				Value:     float64(latest.Value),
+				Timestamp: latest.Timestamp.Time(),
+			})
+		}
+
 	default:
-		return nil, fmt.Errorf("unsupported result format: %T", v)
+		return nil, fmt.Errorf("unsupported value type: %T", value)
 	}
 
 	return results, nil
@@ -291,5 +338,48 @@ func parseRangeQueryResponse(value model.Value) ([]RangeQueryResult, error) {
 	}
 
 	return results, nil
+}
+
+// Example configuration
+func NewPrometheusClient(config Config) (*Client, error) {
+	if config.URL == "" {
+		return nil, fmt.Errorf("prometheus URL is required")
+	}
+
+	// Create a custom HTTP client with timeouts
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:        10,
+			IdleConnTimeout:     30 * time.Second,
+			DisableCompression:  true,
+			DisableKeepAlives:   false,
+			MaxConnsPerHost:     10,
+			MaxIdleConnsPerHost: 10,
+		},
+	}
+
+	client, err := api.NewClient(api.Config{
+		Address: config.URL,
+		Client:  httpClient,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("error creating prometheus client: %w", err)
+	}
+
+	return &Client{
+		api:     v1.NewAPI(client),
+		timeout: config.Timeout,
+		logger:  config.Logger,
+		cache:   config.Cache,
+	}, nil
+}
+
+// Config holds the configuration for the Prometheus client
+type Config struct {
+	URL     string
+	Timeout time.Duration
+	Logger  logger.Logger
+	Cache   *cache.Cache
 }
 
