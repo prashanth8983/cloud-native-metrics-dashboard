@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -55,7 +56,6 @@ func (h *MetricsHandler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 func (h *MetricsHandler) GetTopMetrics(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Parse limit from query string
 	limitStr := r.URL.Query().Get("limit")
 	limit := 10 // Default
 
@@ -75,10 +75,22 @@ func (h *MetricsHandler) GetTopMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	RespondWithJSON(w, http.StatusOK, map[string]interface{}{
-		"metrics": topMetrics,
-		"count":   len(topMetrics),
-	})
+	// Sanitize the response data
+	for i := range topMetrics {
+		if math.IsNaN(topMetrics[i].SampleRate) || math.IsInf(topMetrics[i].SampleRate, 0) {
+			topMetrics[i].SampleRate = 0
+		}
+	}
+
+	response := struct {
+		Metrics []models.TopMetric `json:"metrics"`
+		Count   int               `json:"count"`
+	}{
+		Metrics: topMetrics,
+		Count:   len(topMetrics),
+	}
+
+	RespondWithJSON(w, http.StatusOK, response)
 }
 
 // GetMetricSummary returns a summary of a specific metric

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
@@ -21,15 +22,16 @@ func RespondWithError(w http.ResponseWriter, code int, message string) {
 	})
 }
 
-// respondWithJSON sends a JSON response
+// RespondWithJSON writes a JSON response with the given status code and payload
 func RespondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
 	response, err := json.Marshal(payload)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error": "Internal Server Error", "message": "Failed to marshal JSON response"}`))
+		// Log the actual marshaling error
+		log.Printf("JSON marshaling error: %v, payload: %+v", err, payload)
+		RespondWithError(w, http.StatusInternalServerError, "Failed to marshal JSON response")
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	w.Write(response)

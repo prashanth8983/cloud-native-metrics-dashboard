@@ -123,15 +123,21 @@ func (h *HealthHandler) checkPrometheusHealth(ctx context.Context) (string, map[
 	startTime := time.Now()
 	
 	// Try to execute a simple query
-	_, err := h.promClient.Query(ctx, "up", time.Now())
+	results, err := h.promClient.Query(ctx, "up", time.Now())
 	
-	// Record response time
 	responseTime := time.Since(startTime)
 	details["response_time_ms"] = responseTime.Milliseconds()
 	
 	if err != nil {
 		details["error"] = err.Error()
+		h.logger.Error("prometheus health check failed", "error", err)
 		return "down", details
+	}
+	
+	// Verify we got a response
+	if len(results) == 0 {
+		details["error"] = "no results returned"
+		return "degraded", details
 	}
 	
 	details["error"] = nil
