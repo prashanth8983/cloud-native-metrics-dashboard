@@ -24,12 +24,31 @@ type Logger interface {
 	Fatalf(format string, args ...interface{})
 	WithFields(fields map[string]interface{}) Logger
 	With(fields map[string]interface{}) Logger
+	LogRequest(method, path string, status int, duration time.Duration, reqHeaders, reqBody, resBody, clientIP, userAgent interface{})
 	Sync() error
 }
 
 // zapLogger implements the Logger interface with zap
 type zapLogger struct {
 	logger *zap.SugaredLogger
+}
+
+// LogRequest logs API request details
+func (l *zapLogger) LogRequest(method, path string, status int, duration time.Duration, reqHeaders, reqBody, resBody, clientIP, userAgent interface{}) {
+	if l.logger != nil {
+		l.logger.With(
+			"method", method,
+			"path", path,
+			"status", status,
+			"duration_ms", duration.Milliseconds(),
+			"request_headers", reqHeaders,
+			"request_body", reqBody,
+			"response_body", resBody,
+			"client_ip", clientIP,
+			"user_agent", userAgent,
+		).Infof("API Request - Method: %s, Path: %s, Status: %d, Duration: %v, Response: %v",
+			method, path, status, duration, resBody)
+	}
 }
 
 // NewLogger creates a new Logger with the specified options
@@ -57,7 +76,7 @@ func NewLogger(opts ...Option) Logger {
 		LineEnding:     zapcore.DefaultLineEnding,
 		EncodeLevel:    zapcore.LowercaseLevelEncoder,
 		EncodeTime:     zapcore.TimeEncoder(func(t time.Time, enc zapcore.PrimitiveArrayEncoder) { enc.AppendString(t.UTC().Format(time.RFC3339Nano)) }),
-		EncodeDuration: zapcore.SecondsDurationEncoder,
+		EncodeDuration: zapcore.MillisDurationEncoder,
 		EncodeCaller:   zapcore.ShortCallerEncoder,
 	}
 
@@ -246,4 +265,18 @@ func WithOutput(output io.Writer) Option {
 	return func(c *loggerConfig) {
 		c.output = output
 	}
+}
+
+// TestLogger implements Logger interface for testing
+type testLogger struct {
+	*zapLogger
+}
+
+// NewTestLogger creates a new Logger suitable for testing
+func NewTestLogger() Logger {
+	return NewLogger(
+		WithLevel("debug"),
+		WithOutputType("console"),
+		WithOutput(io.Discard), // Discard output during tests
+	)
 }
