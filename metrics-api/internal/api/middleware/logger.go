@@ -3,7 +3,6 @@ package middleware
 import (
 	"fmt"
 	"net/http"
-	"runtime/debug"
 	"strings"
 	"time"
 
@@ -16,10 +15,10 @@ func LoggingMiddleware(log logger.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 
-			// Create a response writer wrapper to capture the status code
+			// Create a response writer wrapper to capture the status code and body
 			wrw := NewWrapResponseWriter(w)
 
-			// Get the request ID from context (added by RequestID middleware)
+			// Get the request ID from context
 			requestID := GetRequestID(r.Context())
 
 			// Get user info from context if available
@@ -28,8 +27,8 @@ func LoggingMiddleware(log logger.Logger) func(http.Handler) http.Handler {
 				userID = claims.UserID
 			}
 
-			// Prepare initial log data
-			logData := map[string]interface{}{
+			// Log initial request data
+			log.WithFields(map[string]interface{}{
 				"request_id":  requestID,
 				"remote_addr": getClientIP(r),
 				"user_agent":  r.UserAgent(),
@@ -38,39 +37,24 @@ func LoggingMiddleware(log logger.Logger) func(http.Handler) http.Handler {
 				"query":       sanitizeQuery(r.URL.RawQuery),
 				"user_id":     userID,
 				"referer":     r.Referer(),
-			}
-
-			// Log request start
-			log.WithFields(logData).Infof("Request started: %s %s", r.Method, r.URL.Path)
+			}).Info("Request received")
 
 			// Process request
 			defer func() {
-				// Recover from panic
-				if err := recover(); err != nil {
-					stack := string(debug.Stack())
-					log.WithFields(logData).Errorf("Panic: %v\n%s", err, stack)
-					http.Error(wrw, "Internal Server Error", http.StatusInternalServerError)
-				}
-
-				// Calculate request duration
 				duration := time.Since(start)
 
-				// Add response data to the log
-				logData["status"] = wrw.Status()
-				logData["size"] = wrw.BytesWritten()
-				logData["duration"] = duration.Milliseconds()
-
-				// Determine log level based on status code
-				if wrw.Status() >= 500 {
-					log.WithFields(logData).Errorf("Request completed: %s %s %d %s",
-						r.Method, r.URL.Path, wrw.Status(), duration)
-				} else if wrw.Status() >= 400 {
-					log.WithFields(logData).Warnf("Request completed: %s %s %d %s",
-						r.Method, r.URL.Path, wrw.Status(), duration)
-				} else {
-					log.WithFields(logData).Infof("Request completed: %s %s %d %s",
-						r.Method, r.URL.Path, wrw.Status(), duration)
-				}
+				// Log the complete request details
+				log.LogRequest(
+					r.Method,
+					r.URL.Path,
+					wrw.Status(),
+					duration,
+					r.Header,
+					nil, // Request body is not captured in this middleware
+					wrw.Body(),
+					getClientIP(r),
+					r.UserAgent(),
+				)
 			}()
 
 			// Proceed with the request

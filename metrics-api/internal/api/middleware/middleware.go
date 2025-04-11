@@ -69,15 +69,31 @@ func RecoveryMiddleware(log logger.Logger) func(http.Handler) http.Handler {
 // CORSMiddleware adds CORS headers
 func CORSMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Set CORS headers
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-Request-ID")
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			origin = "*"
+		}
+
+		// Set CORS headers for all responses
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, Referer, User-Agent, sec-ch-ua, sec-ch-ua-mobile, sec-ch-ua-platform")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, X-Request-ID")
+		w.Header().Set("Access-Control-Max-Age", "3600")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		
 		// Handle preflight requests
 		if r.Method == "OPTIONS" {
+			// Preflight request response
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("Content-Length", "0")
 			w.WriteHeader(http.StatusOK)
 			return
+		}
+
+		// Set content type for regular requests
+		if r.Method == "POST" {
+			w.Header().Set("Content-Type", "application/json")
 		}
 		
 		next.ServeHTTP(w, r)
@@ -115,16 +131,28 @@ func TimeoutMiddleware(timeout time.Duration) func(http.Handler) http.Handler {
 	}
 }
 
-// WrapResponseWriter is a wrapper for http.ResponseWriter to capture status code
+// WrapResponseWriter is a wrapper for http.ResponseWriter to capture status code and body
 type WrapResponseWriter struct {
 	http.ResponseWriter
 	statusCode   int
 	bytesWritten int
+	body         []byte
 }
 
 // NewWrapResponseWriter creates a new WrapResponseWriter
 func NewWrapResponseWriter(w http.ResponseWriter) *WrapResponseWriter {
-	return &WrapResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	return &WrapResponseWriter{
+		ResponseWriter: w,
+		statusCode:     http.StatusOK,
+	}
+}
+
+// Write captures the response body
+func (w *WrapResponseWriter) Write(b []byte) (int, error) {
+	w.body = append(w.body, b...)
+	n, err := w.ResponseWriter.Write(b)
+	w.bytesWritten += n
+	return n, err
 }
 
 // Status returns the status code
@@ -132,17 +160,18 @@ func (w *WrapResponseWriter) Status() int {
 	return w.statusCode
 }
 
+// BytesWritten returns the number of bytes written
 func (w *WrapResponseWriter) BytesWritten() int {
 	return w.bytesWritten
+}
+
+// Body returns the response body as a string
+func (w *WrapResponseWriter) Body() string {
+	return string(w.body)
 }
 
 // WriteHeader captures the status code
 func (w *WrapResponseWriter) WriteHeader(statusCode int) {
 	w.statusCode = statusCode
 	w.ResponseWriter.WriteHeader(statusCode)
-}
-func (w *WrapResponseWriter) Write(b []byte) (int, error) {
-	n, err := w.ResponseWriter.Write(b)
-	w.bytesWritten += n
-	return n, err
 }

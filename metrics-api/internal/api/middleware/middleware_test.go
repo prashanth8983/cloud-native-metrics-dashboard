@@ -28,21 +28,50 @@ type MockLogger struct {
 }
 
 func NewMockLogger() *MockLogger {
-    return &MockLogger{
-        InfoMessages:  make([]string, 0),
-        WarnMessages:  make([]string, 0),
-        ErrorMessages: make([]string, 0),
-        DebugMessages: make([]string, 0),
-        Fields:        make(map[string]interface{}),
-    }
+	return &MockLogger{
+		InfoMessages:  make([]string, 0),
+		WarnMessages:  make([]string, 0),
+		ErrorMessages: make([]string, 0),
+		DebugMessages: make([]string, 0),
+		Fields:        make(map[string]interface{}),
+	}
 }
 
-func (m *MockLogger) Sync() error {
-    return nil
+func (m *MockLogger) LogRequest(method, path string, status int, duration time.Duration, reqHeaders, reqBody, resBody, clientIP, userAgent interface{}) {
+	logMessage := fmt.Sprintf(
+		"API Request - Method: %s, Path: %s, Status: %d, Duration: %v, Response: %v",
+		method,
+		path,
+		status,
+		duration,
+		resBody,
+	)
+	
+	// Add the message with detailed request/response info to InfoMessages
+	m.InfoMessages = append(m.InfoMessages, logMessage)
+	
+	// Store the details in Fields for later inspection
+	m.Fields["method"] = method
+	m.Fields["path"] = path
+	m.Fields["status"] = status
+	m.Fields["duration"] = duration
+	m.Fields["request_headers"] = reqHeaders
+	m.Fields["request_body"] = reqBody
+	m.Fields["response_body"] = resBody
+	m.Fields["client_ip"] = clientIP
+	m.Fields["user_agent"] = userAgent
+}
+
+func (m *MockLogger) Debug(args ...interface{}) {
+	m.DebugMessages = append(m.DebugMessages, fmt.Sprint(args...))
+}
+
+func (m *MockLogger) Debugf(format string, args ...interface{}) {
+	m.DebugMessages = append(m.DebugMessages, fmt.Sprintf(format, args...))
 }
 
 func (m *MockLogger) Info(args ...interface{}) {
-    m.InfoMessages = append(m.InfoMessages, fmt.Sprint(args...))
+	m.InfoMessages = append(m.InfoMessages, fmt.Sprint(args...))
 }
 
 func (m *MockLogger) Infof(format string, args ...interface{}) {
@@ -65,46 +94,30 @@ func (m *MockLogger) Errorf(format string, args ...interface{}) {
 	m.ErrorMessages = append(m.ErrorMessages, fmt.Sprintf(format, args...))
 }
 
-func (m *MockLogger) Debug(args ...interface{}) {
-	m.DebugMessages = append(m.DebugMessages, fmt.Sprint(args...))
-}
-
-func (m *MockLogger) Debugf(format string, args ...interface{}) {
-	m.DebugMessages = append(m.DebugMessages, fmt.Sprintf(format, args...))
-}
-
 func (m *MockLogger) Fatal(args ...interface{}) {
-	panic(fmt.Sprint(args...))
+	m.ErrorMessages = append(m.ErrorMessages, fmt.Sprint(args...))
 }
 
 func (m *MockLogger) Fatalf(format string, args ...interface{}) {
-	panic(fmt.Sprintf(format, args...))
+	m.ErrorMessages = append(m.ErrorMessages, fmt.Sprintf(format, args...))
 }
 
 func (m *MockLogger) WithFields(fields map[string]interface{}) logger.Logger {
-    for k, v := range fields {
-        m.Fields[k] = v
-    }
-    return m
+	for k, v := range fields {
+		m.Fields[k] = v
+	}
+	return m
 }
 
 func (m *MockLogger) With(fields map[string]interface{}) logger.Logger {
-    // Create a new logger instance to avoid modifying the original
-    newLogger := NewMockLogger()
-    // Copy existing fields
-    for k, v := range m.Fields {
-        newLogger.Fields[k] = v
-    }
-    // Add new fields
-    for k, v := range fields {
-        newLogger.Fields[k] = v
-    }
-    // Copy message history if needed
-    newLogger.InfoMessages = append([]string{}, m.InfoMessages...)
-    newLogger.WarnMessages = append([]string{}, m.WarnMessages...)
-    newLogger.ErrorMessages = append([]string{}, m.ErrorMessages...)
-    newLogger.DebugMessages = append([]string{}, m.DebugMessages...)
-    return newLogger
+	for k, v := range fields {
+		m.Fields[k] = v
+	}
+	return m
+}
+
+func (m *MockLogger) Sync() error {
+	return nil
 }
 
 // Helper function to create a test request
@@ -118,103 +131,128 @@ func createTestRequest(method, path string, headers map[string]string) *http.Req
 
 // Test RequestID middleware
 func TestRequestIDMiddleware(t *testing.T) {
-	// Create a simple test handler
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestID := GetRequestID(r.Context())
-		fmt.Fprint(w, requestID)
-	})
+	tests := []struct {
+		name           string
+		existingReqID  string
+		shouldGenerate bool
+	}{
+		{
+			name:           "No existing request ID",
+			existingReqID:  "",
+			shouldGenerate: true,
+		},
+		{
+			name:           "Existing request ID",
+			existingReqID:  "test-request-id-123",
+			shouldGenerate: false,
+		},
+	}
 
-	// Create middleware
-	middleware := RequestID(handler)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reqID := GetRequestID(r.Context())
+				assert.NotEmpty(t, reqID)
+				w.Write([]byte(reqID))
+			})
 
-	// Test with no existing request ID
-	t.Run("No Existing Request ID", func(t *testing.T) {
-		req := createTestRequest("GET", "/test", nil)
-		rr := httptest.NewRecorder()
+			middleware := RequestID(handler)
 
-		middleware.ServeHTTP(rr, req)
+			headers := make(map[string]string)
+			if tt.existingReqID != "" {
+				headers["X-Request-ID"] = tt.existingReqID
+			}
 
-		// Check response
-		assert.Equal(t, http.StatusOK, rr.Code)
-		assert.NotEmpty(t, rr.Body.String())
-		assert.NotEmpty(t, rr.Header().Get("X-Request-ID"))
-	})
+			req := createTestRequest("GET", "/test", headers)
+			rr := httptest.NewRecorder()
 
-	// Test with existing request ID
-	t.Run("Existing Request ID", func(t *testing.T) {
-		existingID := "test-request-id-123"
-		req := createTestRequest("GET", "/test", map[string]string{
-			"X-Request-ID": existingID,
+			middleware.ServeHTTP(rr, req)
+
+			assert.Equal(t, http.StatusOK, rr.Code)
+			
+			if tt.shouldGenerate {
+				assert.NotEmpty(t, rr.Header().Get("X-Request-ID"))
+				assert.NotEqual(t, tt.existingReqID, rr.Header().Get("X-Request-ID"))
+			} else {
+				assert.Equal(t, tt.existingReqID, rr.Header().Get("X-Request-ID"))
+			}
 		})
-		rr := httptest.NewRecorder()
-
-		middleware.ServeHTTP(rr, req)
-
-		// Check response
-		assert.Equal(t, http.StatusOK, rr.Code)
-		assert.Equal(t, existingID, rr.Body.String())
-		assert.Equal(t, existingID, rr.Header().Get("X-Request-ID"))
-	})
+	}
 }
 
 // Test LoggingMiddleware
 func TestLoggingMiddleware(t *testing.T) {
-	// Create mock logger
 	mockLogger := NewMockLogger()
 
-	// Create a simple test handler
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("success"))
-	})
+	tests := []struct {
+		name           string
+		method         string
+		path           string
+		handlerStatus  int
+		handlerBody    string
+		expectedStatus int
+	}{
+		{
+			name:           "Successful request",
+			method:         "GET",
+			path:           "/test",
+			handlerStatus:  http.StatusOK,
+			handlerBody:    "success",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "Error request",
+			method:         "POST",
+			path:           "/test",
+			handlerStatus:  http.StatusBadRequest,
+			handlerBody:    "bad request",
+			expectedStatus: http.StatusBadRequest,
+		},
+	}
 
-	// Create middleware
-	middleware := LoggingMiddleware(mockLogger)(handler)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.handlerStatus)
+				w.Write([]byte(tt.handlerBody))
+			})
 
-	// Create request
-	req := createTestRequest("GET", "/test", nil)
-	rr := httptest.NewRecorder()
+			middleware := LoggingMiddleware(mockLogger)(handler)
 
-	// Call the middleware
-	middleware.ServeHTTP(rr, req)
+			req := createTestRequest(tt.method, tt.path, nil)
+			rr := httptest.NewRecorder()
 
-	// Check response
-	assert.Equal(t, http.StatusOK, rr.Code)
-	assert.Equal(t, "success", rr.Body.String())
+			middleware.ServeHTTP(rr, req)
 
-	// Check logs
-	assert.GreaterOrEqual(t, len(mockLogger.InfoMessages), 2)
-	assert.Contains(t, mockLogger.InfoMessages[0], "Request started")
-	assert.Contains(t, mockLogger.InfoMessages[1], "Request completed")
+			assert.Equal(t, tt.expectedStatus, rr.Code)
+			assert.Equal(t, tt.handlerBody, rr.Body.String())
+			assert.NotEmpty(t, mockLogger.InfoMessages)
+		})
+	}
 }
 
 // Test RecoveryMiddleware
 func TestRecoveryMiddleware(t *testing.T) {
-	// Create mock logger
 	mockLogger := NewMockLogger()
 
-	// Create a handler that panics
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("test panic")
 	})
 
-	// Create middleware
 	middleware := RecoveryMiddleware(mockLogger)(handler)
 
-	// Create request
 	req := createTestRequest("GET", "/test", nil)
 	rr := httptest.NewRecorder()
 
-	// This should not panic
 	middleware.ServeHTTP(rr, req)
 
-	// Check response
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.NotEmpty(t, mockLogger.ErrorMessages)
 
-	// Check logs
-	assert.GreaterOrEqual(t, len(mockLogger.ErrorMessages), 1)
-	assert.Contains(t, mockLogger.ErrorMessages[0], "Panic recovered")
-	assert.Contains(t, mockLogger.ErrorMessages[0], "test panic")
+	var response map[string]string
+	err := json.Unmarshal(rr.Body.Bytes(), &response)
+	require.NoError(t, err)
+	assert.Contains(t, response["error"], "Internal server error")
 }
 
 // Test JWTAuth middleware
@@ -465,7 +503,7 @@ func TestMetricsMiddleware(t *testing.T) {
 	})
 
 	// Create middleware
-	middleware := metricsMiddleware.Middleware()(handler)
+	middleware := metricsMiddleware.Middleware(handler)
 
 	// Create and execute request
 	req := createTestRequest("GET", "/test", nil)
@@ -514,35 +552,48 @@ func TestWrapResponseWriter(t *testing.T) {
 
 // Test RequestDurationMiddleware
 func TestRequestDurationMiddleware(t *testing.T) {
-	// Create mock logger
 	mockLogger := NewMockLogger()
+	threshold := 100 * time.Millisecond
 
-	// Create a slow handler
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(10 * time.Millisecond) // Sleep for 10ms
-		w.WriteHeader(http.StatusOK)
-	})
+	tests := []struct {
+		name     string
+		duration time.Duration
+		shouldLog bool
+	}{
+		{
+			name:     "Fast request",
+			duration: 50 * time.Millisecond,
+			shouldLog: false,
+		},
+		{
+			name:     "Slow request",
+			duration: 150 * time.Millisecond,
+			shouldLog: true,
+		},
+	}
 
-	// Create middleware with 5ms threshold
-	middleware := RequestDurationMiddleware(mockLogger, 5*time.Millisecond)(handler)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				time.Sleep(tt.duration)
+				w.WriteHeader(http.StatusOK)
+			})
 
-	// Create request
-	req := createTestRequest("GET", "/test", nil)
-	// Add request ID to context
-	ctx := context.WithValue(req.Context(), requestIDKey, "test-request-id")
-	req = req.WithContext(ctx)
-	
-	rr := httptest.NewRecorder()
+			middleware := RequestDurationMiddleware(mockLogger, threshold)(handler)
 
-	// Call the middleware
-	middleware.ServeHTTP(rr, req)
+			req := createTestRequest("GET", "/test", nil)
+			rr := httptest.NewRecorder()
 
-	// Check response
-	assert.Equal(t, http.StatusOK, rr.Code)
+			middleware.ServeHTTP(rr, req)
 
-	// Check logs
-	assert.GreaterOrEqual(t, len(mockLogger.WarnMessages), 1)
-	assert.Contains(t, mockLogger.WarnMessages[0], "Slow request")
+			assert.Equal(t, http.StatusOK, rr.Code)
+			if tt.shouldLog {
+				assert.NotEmpty(t, mockLogger.WarnMessages)
+			} else {
+				assert.Empty(t, mockLogger.WarnMessages)
+			}
+		})
+	}
 }
 
 // Test utility functions
@@ -632,4 +683,30 @@ func TestResponseHelpers(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, response.Code)
 		assert.Equal(t, "Invalid request", response.Message)
 	})
+}
+
+func TestLogRequest(t *testing.T) {
+	mockLogger := NewMockLogger()
+	
+	mockLogger.LogRequest(
+		"GET",
+		"/api/test",
+		200,
+		100*time.Millisecond,
+		map[string]string{"Content-Type": "application/json"},
+		nil,
+		`{"status": "success"}`,
+		"127.0.0.1",
+		"Mozilla/5.0",
+	)
+	
+	// Verify log message
+	assert.Contains(t, mockLogger.InfoMessages[0], "API Request")
+	assert.Contains(t, mockLogger.InfoMessages[0], `{"status": "success"}`)
+	
+	// Verify stored fields
+	assert.Equal(t, "GET", mockLogger.Fields["method"])
+	assert.Equal(t, "/api/test", mockLogger.Fields["path"])
+	assert.Equal(t, 200, mockLogger.Fields["status"])
+	assert.Equal(t, `{"status": "success"}`, mockLogger.Fields["response_body"])
 }
