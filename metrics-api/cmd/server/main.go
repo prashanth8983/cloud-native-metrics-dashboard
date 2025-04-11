@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"metrics-api/internal/api"
+	"metrics-api/internal/cache"
 	"metrics-api/internal/config"
 	"metrics-api/internal/prometheus"
 	"metrics-api/internal/service"
@@ -42,8 +43,20 @@ func main() {
 		cancel()
 	}()
 	
+	// Initialize cache
+	cacheOptions := cache.Options{
+		DefaultExpiration: time.Duration(cfg.Cache.TTLSeconds) * time.Second,
+		CleanupInterval:   time.Duration(cfg.Cache.TTLSeconds/2) * time.Second,
+		MaxItems:          cfg.Cache.MaxSizeItems,
+	}
+	cacheInstance := cache.New(cacheOptions)
+	
 	// Initialize Prometheus client
-	promClient, err := prometheus.NewClient(cfg.Prometheus.URL)
+	promClient, err := prometheus.NewClient(
+		cfg.Prometheus.URL,
+		log,
+		cacheInstance,
+	)
 	if err != nil {
 		log.Fatalf("Failed to create Prometheus client: %v", err)
 	}
