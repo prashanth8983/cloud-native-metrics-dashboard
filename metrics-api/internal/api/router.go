@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"metrics-api/internal/api/handlers"
 	"metrics-api/internal/api/middleware"
@@ -10,6 +11,7 @@ import (
 	"metrics-api/pkg/logger"
 
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // RouterOption represents a function that configures a router
@@ -83,11 +85,16 @@ func NewRouter(options ...RouterOption) *mux.Router {
 	// Create router
 	router := mux.NewRouter()
 	
+	// Apply CORS middleware at the root level
+	router.Use(middleware.CORSMiddleware)
+	
 	// Set up API routes
 	apiRouter := router.PathPrefix("/api/v1").Subrouter()
 	
-	// Add middleware
+	// Add other middleware
 	apiRouter.Use(middleware.RequestID)
+	apiRouter.Use(middleware.LogHTTPErrorMiddleware(cfg.Logger))
+	apiRouter.Use(middleware.RequestDurationMiddleware(cfg.Logger, 5*time.Second))
 	apiRouter.Use(middleware.LoggingMiddleware(cfg.Logger))
 	apiRouter.Use(middleware.RecoveryMiddleware(cfg.Logger))
 	
@@ -110,6 +117,14 @@ func NewRouter(options ...RouterOption) *mux.Router {
 	// Always register health handler
 	healthHandler := handlers.NewHealthHandler(nil, cfg.Logger, cfg.Version)
 	healthHandler.RegisterRoutes(apiRouter)
+	
+	// Add Prometheus metrics endpoint at /metrics (outside of /api/v1)
+	router.Handle("/metrics", promhttp.Handler())
+	
+	// Add OPTIONS handler for CORS preflight requests
+	router.PathPrefix("/").Methods("OPTIONS").Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
 	
 	// Add catch-all 404 handler
 	router.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
