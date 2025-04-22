@@ -37,8 +37,9 @@ USER appuser
 # Set environment variables
 ENV SERVER_PORT=8080
 ENV PROMETHEUS_URL=http://prometheus:9090
-ENV LOG_LEVEL=info
+ENV LOG_LEVEL=debug
 ENV LOG_FORMAT=json
+ENV METRICS_PATH=/metrics
 
 # Expose the application port
 EXPOSE 8080
